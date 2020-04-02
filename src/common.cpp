@@ -8,13 +8,13 @@
 #include <strsafe.h>
 #pragma warning(pop)
 
-#if IS_WINDOWS
-i64 const PerfTimer::frequency = []() {
+#if OS_WINDOWS
+s64 const PerfTimer::frequency = []() {
 	LARGE_INTEGER freq;
 	QueryPerformanceFrequency(&freq);
 	return freq.QuadPart;
 }();
-i64 PerfTimer::getCounter() {
+s64 PerfTimer::getCounter() {
 	LARGE_INTEGER counter;
 	QueryPerformanceCounter(&counter);
 	return counter.QuadPart;
@@ -23,7 +23,7 @@ i64 PerfTimer::getCounter() {
 #error no timer
 #endif
 
-i64 setFilePointer(void* file, i64 distance, FilePoint startPoint) {
+s64 setFilePointer(void* file, s64 distance, FilePoint startPoint) {
 	LARGE_INTEGER result, dist;
 	dist.QuadPart = distance;
 	if (!SetFilePointerEx(file, dist, &result, (DWORD)startPoint)) {
@@ -32,7 +32,7 @@ i64 setFilePointer(void* file, i64 distance, FilePoint startPoint) {
 	return result.QuadPart;
 }
 
-i64 getFilePointer(void* file) {
+s64 getFilePointer(void* file) {
 	LARGE_INTEGER result;
 	if (!SetFilePointerEx(file, {}, &result, SEEK_CUR)) {
 		return -1;
@@ -138,9 +138,9 @@ void init() {
 
 			for (;;) {
 				if (auto e = entries.pop(); e.has_value()) {
-					i64 end = e->end;
-					i64 begin = e->begin;
-					i64 const usInSecond = 1000000;
+					s64 end = e->end;
+					s64 begin = e->begin;
+					s64 const usInSecond = 1000000;
 					begin = begin * usInSecond / PerfTimer::frequency;
 					end = end * usInSecond / PerfTimer::frequency;
 					char buffer[256];

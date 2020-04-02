@@ -1,5 +1,2 @@
+#include "common.h"
 #include "common.cpp"
-#include "input.cpp"
-#include "renderer.cpp"
-#include "time.cpp"
-#include "window.cpp"

@@ -377,12 +377,12 @@ LoadedMesh<Vertex> convertOBJtoMesh(ParsedOBJ const& obj) {
 }
 
 struct GAME_API Game {
-	static constexpr i32 w = 128;
+	static constexpr s32 w = 128;
 	Mesh* m;
-	Game() {
+	Game(Renderer& renderer) {
 		PROFILE_FUNCTION;
-		auto testShader = Renderer::createShader(LDATA "shaders/test.shader");
-		Renderer::bindShader(testShader);
+		auto testShader = renderer.createShader(LDATA "shaders/test.shader");
+		renderer.bindShader(testShader);
 
 		auto obj = loadOBJ(DATA "mesh/untitled.obj");
 		ASSERT(obj.valid());
@@ -397,20 +397,20 @@ struct GAME_API Game {
 
 		obj.release();
 
-		m = Mesh::create();
-		m->setVertices(mesh.vertices.data(), sizeof(mesh.vertices[0]), (u32)mesh.vertices.size());
-		m->setIndices(mesh.indices.data(), sizeof(mesh.indices[0]), (u32)mesh.indices.size());
+		m = renderer.createMesh();
+		renderer.setMeshVertices(m, mesh.vertices.data(), sizeof(mesh.vertices[0]), (u32)mesh.vertices.size());
+		renderer.setMeshIndices(m, mesh.indices.data(), sizeof(mesh.indices[0]), (u32)mesh.indices.size());
 	}
 	m4 cameraProjection;
 	v3 camPos{0, 0, -(w + 10)};
 	v3 camRot{};
 	u32* backBuffer = 0;
-	void resize() {
+	void resize(Renderer& renderer) {
 		delete backBuffer;
 		backBuffer = new u32[Window::getClientSize().x * Window::getClientSize().y];
-		cameraProjection = m4::perspective(aspectRatio(Window::getClientSize()), PI / 2, .01f, 1000.f);
+		cameraProjection = m4::perspective(aspectRatio(Window::getClientSize()), deg2rad(90.0f), .01f, 1000.f);
 	}
-	void update() {
+	void update(Renderer& renderer) {
 		PROFILE_FUNCTION;
 
 		camRot += V3(-Input::mouseDelta().y, Input::mouseDelta().x, 0) * .001f;
@@ -431,7 +431,14 @@ struct GAME_API Game {
 		for (u32 y = 0; y < cs.y; ++y) {
 			for (u32 x = 0; x < cs.x; ++x) {
 #if 1
-				u8 c = u8(voronoi(V4i(x, y, Time::time * 25, Time::time), 16) * 255);
+				//auto c = V4s(random01(V4(x, y, Time::time / 0x100, 0)) * 255);
+				//backBuffer[y * cs.x + x] = u32(c.x | (c.y << 8) | (c.z << 16));
+				u8 c = u8(voronoi(V4(x, y, Time::time * 25, Time::time) / 16) * 255);
+				//u8 c = u8(voronoi(V3(x, y, Time::time * 25) / 16) * 255);
+				//u8 c = u8(voronoi(V2(x, y + Time::time * 25) / 16) * 255);
+				//u8 c = u8(voronoi(V4s(x, y, Time::time * 25, Time::time), 16) * 255);
+				//u8 c = u8(voronoi(V3s(x, y, Time::time * 25), 16) * 255); // 230-240
+				//u8 c = u8(voronoi(V2s(x, y + Time::time * 25), 16) * 255);
 				backBuffer[y * cs.x + x] = u32(c | (c << 8) | (c << 16) | (c << 24));
 #else
 #if 1
@@ -450,7 +457,7 @@ struct GAME_API Game {
 		}
 		u64 end = __rdtsc();
 		u64 total = end - begin;
-		Renderer::fillRenderTarget(backBuffer);
+		renderer.fillRenderTarget(backBuffer);
 		printf("time: %fms; cy: %llu; cy/e: %llu\n", timer.getMilliseconds(), total, total / (cs.x * cs.y));
 	}
 	~Game() {}
@@ -462,8 +469,8 @@ WindowCreationInfo getWindowInfo() {
 	info.clientSize = {256, 256};
 	return info;
 }
-Game* start() { return new Game; }
-void update(Game& game) { return game.update(); }
-void resize(Game& game) { return game.resize(); }
+Game* start(Renderer& renderer) { return new Game(renderer); }
+void update(Game& game, Renderer& renderer) { return game.update(renderer); }
+void resize(Game& game, Renderer& renderer) { return game.resize(renderer); }
 void shutdown(Game& game) { delete &game; }
 } // namespace GameAPI

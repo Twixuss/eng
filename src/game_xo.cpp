@@ -4,9 +4,9 @@
 struct Cell {
 	v2u index{};
 	v3 position{};
-	void update(v2u clientSize, v2i mousePos) {
-		v2i bottom = V2i(clientSize * index / 3);
-		v2i top = V2i(clientSize * (index + 1) / 3);
+	void update(v2u clientSize, v2s mousePos) {
+		v2s bottom = v2s(clientSize * index / 3);
+		v2s top = v2s(clientSize * (index + 1) / 3);
 		v3 tp = position;
 		if (mousePos.x > bottom.x && mousePos.y > bottom.y && mousePos.x <= top.x && mousePos.y <= top.y) {
 			tp.z = -0.5f;
@@ -41,7 +41,7 @@ struct GAME_API Game {
 		cellMesh->setVertices(vertices, sizeof(vertices[0]), _countof(vertices));
 		cellMesh->setIndices(indices, sizeof(indices[0]), _countof(indices));
 
-		for (i32 i = 0; i < 9; ++i) {
+		for (s32 i = 0; i < 9; ++i) {
 			auto& c = cells[i];
 			c.index = V2u(i / 3, 2 - i % 3);
 			c.position = V3(i / 3, i % 3, 1) * 2 - 2;

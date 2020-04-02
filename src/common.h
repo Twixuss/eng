@@ -1,6 +1,17 @@
 #pragma once
 #define _CRT_SECURE_NO_WARNINGS
-#include "d:/src/tl/include/tl/common.h"
+
+#define PRINT_AND_THROW(string) \
+	puts(string);               \
+	DEBUG_BREAK();              \
+	throw std::runtime_error(string)
+
+#define ASSERTION_FAILURE(causeString, expression, ...)                                                        \
+	PRINT_AND_THROW(causeString "\nFile: " __FILE__ "\nLine: " STRINGIZE(__LINE__) "\nExpression: " expression \
+																				   "\nMessage: " __VA_ARGS__)
+#include "../dep/tl/include/tl/common.h"
+#include "../dep/tl/include/tl/math.h"
+using namespace TL;
 
 // clang-format off
 #define DISABLED_WARNINGS                                \
@@ -19,9 +30,6 @@
 // clang-format on
 #pragma warning(disable : DISABLED_WARNINGS)
 
-#include "d:/src/tl/include/tl/math.h"
-using namespace TL;
-
 #if defined BUILD_ENG
 #define ENG_API	 __declspec(dllexport)
 #define GAME_API __declspec(dllimport)
@@ -34,7 +42,6 @@ using namespace TL;
 #endif
 
 #if COMPILER_MSVC
-#define _CRT_SECURE_NO_WARNINGS
 #pragma warning(push, 0)
 #pragma warning(disable : 4710)
 #pragma warning(disable : 4711)
@@ -46,6 +53,7 @@ using namespace TL;
 #include <thread>
 #include <chrono>
 #include <utility>
+#include <mutex>
 
 #if COMPILER_MSVC
 #pragma warning(pop)
@@ -165,32 +173,32 @@ void circularQueueTest() {
 
 } // namespace SPSC
 
-#if IS_WINDOWS
+#if OS_WINDOWS
 struct ENG_API PerfTimer {
 	PerfTimer() : begin(getCounter()) {}
-	inline i64 getElapsedCounter() { return getCounter() - begin; }
+	inline s64 getElapsedCounter() { return getCounter() - begin; }
 	inline void reset() { begin = getCounter(); }
 
-	static i64 const frequency;
-	static i64 getCounter();
+	static s64 const frequency;
+	static s64 getCounter();
 	template <class Ret = f32>
-	inline static Ret getSeconds(i64 begin, i64 end) {
+	inline static Ret getSeconds(s64 begin, s64 end) {
 		return (Ret)(end - begin) / (Ret)frequency;
 	}
 	template <class Ret = f32>
-	inline static Ret getMilliseconds(i64 elapsed) {
+	inline static Ret getMilliseconds(s64 elapsed) {
 		return (Ret)(elapsed * 1000) / (Ret)frequency;
 	}
 	template <class Ret = f32>
-	inline static Ret getMicroseconds(i64 elapsed) {
+	inline static Ret getMicroseconds(s64 elapsed) {
 		return (Ret)(elapsed * 1000000) / (Ret)frequency;
 	}
 	template <class Ret = f32>
-	inline static Ret getMilliseconds(i64 begin, i64 end) {
+	inline static Ret getMilliseconds(s64 begin, s64 end) {
 		return getMilliseconds<Ret>(begin - end);
 	}
 	template <class Ret = f32>
-	inline static Ret getMicroseconds(i64 begin, i64 end) {
+	inline static Ret getMicroseconds(s64 begin, s64 end) {
 		return getMicroseconds<Ret>(begin - end);
 	}
 	template <class Ret = f32>
@@ -203,7 +211,7 @@ struct ENG_API PerfTimer {
 	}
 
 private:
-	i64 begin;
+	s64 begin;
 };
 #else
 #error no timer
@@ -215,7 +223,7 @@ enum class FilePoint : u32 {
 	end = 2,
 };
 
-ENG_API i64 setFilePointer(void* file, i64 offset, FilePoint startPoint = FilePoint::begin);
+ENG_API s64 setFilePointer(void* file, s64 offset, FilePoint startPoint = FilePoint::begin);
 ENG_API bool readFile(void* handle, void* buffer, size_t size);
 ENG_API bool writeFile(void* handle, void const* buffer, size_t size);
 
@@ -235,7 +243,7 @@ ENG_API void freeCopiedBuffer(void* data);
 
 namespace Profiler {
 struct Entry {
-	i64 begin, end;
+	s64 begin, end;
 	char* name;
 };
 ENG_API void init();
