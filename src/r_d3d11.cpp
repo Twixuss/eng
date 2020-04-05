@@ -55,7 +55,7 @@ template <class T>
 concept CShader = std::is_same_v<T, VS> || std::is_same_v<T, PS>;
 
 template <CShader Shader>
-typename Shader::Type createShader(StringView src, char const* name, D3D_SHADER_MACRO const* defines) {
+static typename Shader::Type createShader(StringView src, char const* name, D3D_SHADER_MACRO const* defines) {
 	PROFILE_FUNCTION;
 	ID3DBlob* code{};
 	ID3DBlob* messages{};
@@ -149,7 +149,54 @@ D3D11_BLEND cvtBlend(Blend blend) {
 DXGI_FORMAT cvtFormat(Format format) {
 	switch (format) {
 		case Format::UN_RGB8: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case Format::F_RGB16: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+		case Format::F_R32: return DXGI_FORMAT_R32_FLOAT;
+		case Format::F_RGBA16: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+		case Format::F_RGB32: return DXGI_FORMAT_R32G32B32_FLOAT;
+		default: INVALID_CODE_PATH("bad format");
+	}
+}
+u32 getSize(DXGI_FORMAT format) {
+	switch (format) {
+		case DXGI_FORMAT_R32G32B32A32_FLOAT:
+		case DXGI_FORMAT_R32G32B32A32_UINT:
+		case DXGI_FORMAT_R32G32B32A32_SINT: return sizeof(u32) * 4;
+		case DXGI_FORMAT_R32G32B32_FLOAT:
+		case DXGI_FORMAT_R32G32B32_UINT:
+		case DXGI_FORMAT_R32G32B32_SINT: return sizeof(u32) * 3;
+		case DXGI_FORMAT_R32G32_FLOAT:
+		case DXGI_FORMAT_R32G32_UINT:
+		case DXGI_FORMAT_R32G32_SINT: return sizeof(u32) * 2;
+		case DXGI_FORMAT_R32_FLOAT:
+		case DXGI_FORMAT_R32_UINT:
+		case DXGI_FORMAT_R32_SINT: return sizeof(u32);
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		case DXGI_FORMAT_R16G16B16A16_UNORM:
+		case DXGI_FORMAT_R16G16B16A16_UINT:
+		case DXGI_FORMAT_R16G16B16A16_SNORM:
+		case DXGI_FORMAT_R16G16B16A16_SINT: return sizeof(u16) * 4;
+		case DXGI_FORMAT_R16G16_FLOAT:
+		case DXGI_FORMAT_R16G16_UNORM:
+		case DXGI_FORMAT_R16G16_UINT:
+		case DXGI_FORMAT_R16G16_SNORM:
+		case DXGI_FORMAT_R16G16_SINT: return sizeof(u16) * 2;
+		case DXGI_FORMAT_R16_FLOAT:
+		case DXGI_FORMAT_R16_UNORM:
+		case DXGI_FORMAT_R16_UINT:
+		case DXGI_FORMAT_R16_SNORM:
+		case DXGI_FORMAT_R16_SINT: return sizeof(u16);
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_R8G8B8A8_UINT:
+		case DXGI_FORMAT_R8G8B8A8_SNORM:
+		case DXGI_FORMAT_R8G8B8A8_SINT: return sizeof(u8) * 4;
+		case DXGI_FORMAT_R8G8_UNORM:
+		case DXGI_FORMAT_R8G8_UINT:
+		case DXGI_FORMAT_R8G8_SNORM:
+		case DXGI_FORMAT_R8G8_SINT: return sizeof(u8) * 2;
+		case DXGI_FORMAT_R8_UNORM:
+		case DXGI_FORMAT_R8_UINT:
+		case DXGI_FORMAT_R8_SNORM:
+		case DXGI_FORMAT_R8_SINT: return sizeof(u8);
 		default: INVALID_CODE_PATH("bad format");
 	}
 }
@@ -166,124 +213,34 @@ struct RenderTarget {
 	ID3D11RenderTargetView* rtv;
 	ID3D11ShaderResourceView* srv;
 	ID3D11Texture2D* texture;
-	void release() {
-		RELEASE(rtv);
-		RELEASE(srv);
-		RELEASE(texture);
-	}
-	void create(v2u size, Format format, u32 sampleCount) {
-		auto dxgiFormat = cvtFormat(format);
-		{
-			D3D11_TEXTURE2D_DESC desc{};
-			desc.Format = dxgiFormat;
-			desc.ArraySize = 1;
-			desc.MipLevels = 1;
-			desc.Usage = D3D11_USAGE_DEFAULT;
-			desc.SampleDesc = {sampleCount, 0};
-			desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-			desc.Width = size.x;
-			desc.Height = size.y;
-			DHR(device->CreateTexture2D(&desc, 0, &texture));
-		}
-		D3D11_RENDER_TARGET_VIEW_DESC desc{};
-		desc.ViewDimension = sampleCount == 1 ? D3D11_RTV_DIMENSION_TEXTURE2D : D3D11_RTV_DIMENSION_TEXTURE2DMS;
-		desc.Format = dxgiFormat;
-		DHR(device->CreateRenderTargetView(texture, &desc, &rtv));
-		DHR(device->CreateShaderResourceView(texture, 0, &srv));
-	}
-	void bind() { immediateContext->OMSetRenderTargets(1, &rtv, 0); }
-	void bind(Stage stage, u32 slot) {
-		switch (stage) {
-			case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &srv); break;
-			case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &srv); break;
-			default: INVALID_CODE_PATH("bad shader stage");
-		}
-	}
 };
 struct StructuredBuffer {
-	ID3D11Buffer* buffer = 0;
-	ID3D11ShaderResourceView* srv = 0;
-	u32 currentSize = 0;
-	void release() {
-		buffer->Release();
-		srv->Release();
-		buffer = 0;
-	}
-	bool valid() { return buffer != 0; }
-	void create(void const* data, u32 stride, u32 count) {
-		ASSERT(!buffer, "StructuredBuffer not released");
-		buffer = createBuffer(D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, stride * count,
-							  stride, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, data);
-		D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
-		desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-		desc.Buffer.ElementWidth = stride;
-		desc.Buffer.NumElements = count;
-		DHR(device->CreateShaderResourceView(buffer, &desc, &srv));
-		currentSize = count * stride;
-	}
-	void update(void const* data, u32 size) {
-		ASSERT(size <= currentSize, "buffer overflow");
-		D3D11_MAPPED_SUBRESOURCE mapped{};
-		DHR(immediateContext->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
-		memcpy(mapped.pData, data, size);
-		immediateContext->Unmap(buffer, 0);
-	}
-	void bind(Stage stage, u32 slot) {
-		switch (stage) {
-			case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &srv); break;
-			case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &srv); break;
-			default: INVALID_CODE_PATH("Bad shader stage"); break;
-		}
-	}
+	ID3D11Buffer* buffer;
+	ID3D11ShaderResourceView* srv;
+	u32 currentSize;
 };
 struct Shader {
-	ID3D11VertexShader* vs = 0;
-	ID3D11PixelShader* ps = 0;
-	void bind() {
-		immediateContext->VSSetShader(vs, 0, 0);
-		immediateContext->PSSetShader(ps, 0, 0);
-	}
-	void release() {
-		RELEASE(vs);
-		RELEASE(ps);
-	}
+	ID3D11VertexShader* vs;
+	ID3D11PixelShader* ps;
 };
-
-static ID3D11SamplerState* samplers[(u32)Address::count][(u32)Filter::count]{};
-
 struct Texture {
-	ID3D11ShaderResourceView* srv = 0;
-	u32 samplerIndex = 0;
-	void bind(Stage stage, u32 slot) {
-		auto sampler = &samplers[0][0] + samplerIndex;
-		switch (stage) {
-			case Stage::vs:
-				immediateContext->VSSetShaderResources(slot, 1, &srv);
-				immediateContext->VSSetSamplers(slot, 1, sampler);
-				break;
-			case Stage::ps:
-				immediateContext->PSSetShaderResources(slot, 1, &srv);
-				immediateContext->PSSetSamplers(slot, 1, sampler);
-				break;
-			default: INVALID_CODE_PATH("Bad shader stage"); break;
-		}
-	}
+	ID3D11Texture2D* texture;
+	ID3D11ShaderResourceView* srv;
+	u32 samplerIndex;
+	u32 rowPitch;
 };
-
-#define CHECK_ID(val) ASSERT((val).valid(), "invalid id")
 
 static ID3D11BlendState* blends[(u32)Blend::count][(u32)Blend::count][(u32)BlendOp::count]{};
+static ID3D11SamplerState* samplers[(u32)Address::count][(u32)Filter::count]{};
 
-#define MAX_BUFFERS 1024
-static StructuredBuffer buffers[MAX_BUFFERS]{};
-
-#define MAX_TEXTURES 1024
-static Texture textures[MAX_TEXTURES]{};
-
-#define MAX_SHADERS 1024
-static Shader shaders[MAX_SHADERS]{};
-
+#define MAX_BUFFERS		   1024
+#define MAX_TEXTURES	   1024
+#define MAX_SHADERS		   1024
 #define MAX_RENDER_TARGETS 1024
+
+static StructuredBuffer buffers[MAX_BUFFERS]{};
+static Texture textures[MAX_TEXTURES]{};
+static Shader shaders[MAX_SHADERS]{};
 static RenderTarget renderTargets[MAX_RENDER_TARGETS]{};
 
 #define MAX_MATRIX_COUNT 8
@@ -300,6 +257,8 @@ ID3D11Buffer* matrixCBuffer;
 
 #define this renderer
 
+#define CHECK_ID(val) ASSERT((val).valid(), "invalid id")
+
 struct alignas(16) ScreenInfoCBD {
 	v2 screenSize;
 	v2 invScreenSize;
@@ -309,12 +268,95 @@ struct alignas(16) ScreenInfoCBD {
 ScreenInfoCBD screenInfoCBD;
 ID3D11Buffer* screenInfoCB;
 
+void create(RenderTarget& rt, v2u size, Format format, u32 sampleCount) {
+	auto dxgiFormat = cvtFormat(format);
+	{
+		D3D11_TEXTURE2D_DESC desc{};
+		desc.Format = dxgiFormat;
+		desc.ArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.SampleDesc = {sampleCount, 0};
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		desc.Width = size.x;
+		desc.Height = size.y;
+		DHR(device->CreateTexture2D(&desc, 0, &rt.texture));
+	}
+	D3D11_RENDER_TARGET_VIEW_DESC desc{};
+	desc.ViewDimension = sampleCount == 1 ? D3D11_RTV_DIMENSION_TEXTURE2D : D3D11_RTV_DIMENSION_TEXTURE2DMS;
+	desc.Format = dxgiFormat;
+	DHR(device->CreateRenderTargetView(rt.texture, &desc, &rt.rtv));
+	DHR(device->CreateShaderResourceView(rt.texture, 0, &rt.srv));
+}
+void release(RenderTarget& rt) {
+	RELEASE(rt.rtv);
+	RELEASE(rt.srv);
+	RELEASE(rt.texture);
+}
+void bind(RenderTarget& rt) { immediateContext->OMSetRenderTargets(1, &rt.rtv, 0); }
+void bind(RenderTarget& rt, Stage stage, u32 slot) {
+	switch (stage) {
+		case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &rt.srv); break;
+		case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &rt.srv); break;
+		default: INVALID_CODE_PATH("bad shader stage");
+	}
+}
+void create(StructuredBuffer& buf, void const* data, u32 stride, u32 count) {
+	ASSERT(!buf.buffer, "StructuredBuffer not released");
+	buf.buffer = createBuffer(D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, stride * count,
+							  stride, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, data);
+	D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+	desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+	desc.Buffer.ElementWidth = stride;
+	desc.Buffer.NumElements = count;
+	DHR(device->CreateShaderResourceView(buf.buffer, &desc, &buf.srv));
+	buf.currentSize = count * stride;
+}
+void release(StructuredBuffer& buf) {
+	RELEASE(buf.buffer);
+	RELEASE(buf.srv);
+	buf.currentSize = 0;
+}
+bool valid(StructuredBuffer& buf) { return buf.buffer != 0; }
+void update(StructuredBuffer& buf, void const* data, u32 size) {
+	ASSERT(size <= buf.currentSize, "buffer overflow");
+	D3D11_MAPPED_SUBRESOURCE mapped{};
+	DHR(immediateContext->Map(buf.buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+	memcpy(mapped.pData, data, size);
+	immediateContext->Unmap(buf.buffer, 0);
+}
+void bind(StructuredBuffer& buf, Stage stage, u32 slot) {
+	switch (stage) {
+		case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &buf.srv); break;
+		case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &buf.srv); break;
+		default: INVALID_CODE_PATH("Bad shader stage"); break;
+	}
+}
+void bind(Shader& sh) {
+	immediateContext->VSSetShader(sh.vs, 0, 0);
+	immediateContext->PSSetShader(sh.ps, 0, 0);
+}
+void release(Shader& sh) {
+	RELEASE(sh.vs);
+	RELEASE(sh.ps);
+}
+void bind(Texture& tex, Stage stage, u32 slot) {
+	auto sampler = &samplers[0][0] + tex.samplerIndex;
+	ASSERT(sampler < &samplers[(u32)Address::count][(u32)Filter::count], "invalid sampler");
+	switch (stage) {
+		case Stage::vs:
+			immediateContext->VSSetShaderResources(slot, 1, &tex.srv);
+			immediateContext->VSSetSamplers(slot, 1, sampler);
+			break;
+		case Stage::ps:
+			immediateContext->PSSetShaderResources(slot, 1, &tex.srv);
+			immediateContext->PSSetSamplers(slot, 1, sampler);
+			break;
+		default: INVALID_CODE_PATH("Bad shader stage"); break;
+	}
+}
 R_INIT {
 	PROFILE_FUNCTION;
-
-	char buf[1024];
-	GetCurrentDirectoryA(1024, buf);
-	puts(buf);
 
 	DXGI_SWAP_CHAIN_DESC swapChainDesc{};
 	swapChainDesc.BufferCount = 1;
@@ -348,22 +390,22 @@ R_CREATE_RT {
 	auto rt = std::find_if(std::begin(renderTargets), std::end(renderTargets),
 						   [](RenderTarget& rt) { return rt.texture == 0; });
 	ASSERT(rt != std::end(renderTargets), "out of render targets");
-	rt->create(size, format, sampleCount);
+	create(*rt, size, format, sampleCount);
 	return {(u32)(rt - std::begin(renderTargets))};
 }
 R_BIND_RT {
 	CHECK_ID(rt);
-	renderTargets[rt.id].bind();
+	bind(renderTargets[rt.id]);
 }
 R_BIND_RT_AS_TEXTURE {
 	CHECK_ID(rt);
-	renderTargets[rt.id].bind(stage, slot);
+	bind(renderTargets[rt.id], stage, slot);
 }
 R_SHUTDOWN {}
 R_RESIZE {
 	PROFILE_FUNCTION;
 	auto& backBuffer = renderTargets[0];
-	backBuffer.release();
+	release(backBuffer);
 	DHR(swapChain->ResizeBuffers(1, clientSize.x, clientSize.y, DXGI_FORMAT_UNKNOWN, 0));
 	DHR(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer.texture)));
 	DHR(device->CreateRenderTargetView(backBuffer.texture, 0, &backBuffer.rtv));
@@ -384,22 +426,18 @@ R_RESIZE {
 R_CREATE_BUFFER {
 	auto vb = std::find_if(std::begin(buffers), std::end(buffers), [](StructuredBuffer& b) { return b.buffer == 0; });
 	ASSERT(vb != std::end(buffers), "out of buffers");
-	vb->create(data, stride, count);
+	create(*vb, data, stride, count);
 	return {(u32)(vb - std::begin(buffers))};
 }
 R_UPDATE_BUFFER {
 	CHECK_ID(buffer);
-	buffers[buffer.id].update(data, size);
+	update(buffers[buffer.id], data, size);
 }
 R_BIND_BUFFER {
 	CHECK_ID(buffer);
-	buffers[buffer.id].bind(stage, slot);
+	bind(buffers[buffer.id], stage, slot);
 }
-
-R_CREATE_TEXTURE {
-	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
-	ASSERT(tex != std::end(textures), "out of textures");
-	DHR(D3DX11CreateShaderResourceViewFromFileA(device, path, 0, 0, &tex->srv, 0));
+ID3D11SamplerState** initSampler(Address address, Filter filter) {
 	auto sampler = &samplers[(u32)address][(u32)filter];
 	if (*sampler == 0) {
 		D3D11_SAMPLER_DESC desc{};
@@ -409,12 +447,52 @@ R_CREATE_TEXTURE {
 		desc.MaxLOD = FLT_MAX;
 		DHR(device->CreateSamplerState(&desc, sampler));
 	}
-	tex->samplerIndex = (u32)(sampler - &samplers[0][0]);
+	return sampler;
+}
+R_CREATE_TEXTURE_FROM_FILE {
+	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
+	ASSERT(tex != std::end(textures), "out of textures");
+	DHR(D3DX11CreateShaderResourceViewFromFileA(device, path, 0, 0, &tex->srv, 0));
+	tex->samplerIndex = (u32)(initSampler(address, filter) - &samplers[0][0]);
+
+	tex->srv->GetResource((ID3D11Resource**)&tex->texture);
+
+	D3D11_TEXTURE2D_DESC desc;
+	tex->texture->GetDesc(&desc);
+	tex->rowPitch = getSize(desc.Format) * desc.Width;
+
+	return {(u32)(tex - std::begin(textures))};
+}
+R_CREATE_TEXTURE {
+	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
+	ASSERT(tex != std::end(textures), "out of textures");
+	auto dxgiFormat = cvtFormat(format);
+	{
+		D3D11_TEXTURE2D_DESC desc{};
+		desc.Format = dxgiFormat;
+		desc.ArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.SampleDesc = {1, 0};
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.Width = width;
+		desc.Height = height;
+		DHR(device->CreateTexture2D(&desc, 0, &tex->texture));
+	}
+	{
+		D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+		desc.Format = dxgiFormat;
+		desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		desc.Texture2D.MipLevels = 1;
+		DHR(device->CreateShaderResourceView(tex->texture, &desc, &tex->srv));
+	}
+	tex->samplerIndex = (u32)(initSampler(address, filter) - &samplers[0][0]);
+	tex->rowPitch = getSize(dxgiFormat) * width;
 	return {(u32)(tex - std::begin(textures))};
 }
 R_BIND_TEXTURE {
 	CHECK_ID(texture);
-	textures[texture.id].bind(stage, slot);
+	bind(textures[texture.id], stage, slot);
 }
 R_CREATE_SHADER {
 	PROFILE_FUNCTION;
@@ -458,27 +536,24 @@ R_CREATE_SHADER {
 }
 R_RELEASE_SHADER {
 	CHECK_ID(shader);
-	shaders[shader.id].release();
+	release(shaders[shader.id]);
 }
 R_RELEASE_RT {
 	CHECK_ID(rt);
-	renderTargets[rt.id].release();
+	release(renderTargets[rt.id]);
 }
-R_PREPARE {
-}
-R_RENDER { 
-	DHR(swapChain->Present(this->window->fullscreen, 0)); 
+R_PREPARE {}
+R_RENDER {
+	DHR(swapChain->Present(this->window->fullscreen, 0));
 	this->drawCalls = 0;
 }
-R_FILL_RENDER_TARGET {
-	ID3D11Resource* tex;
-	renderTargets[0].rtv->GetResource(&tex);
-	immediateContext->UpdateSubresource(tex, 0, 0, data, this->window->clientSize.x * sizeof(u32), 0);
-	tex->Release();
+R_UPDATE_TEXTURE {
+	auto& t = textures[tex.id];
+	immediateContext->UpdateSubresource(t.texture, 0, 0, data, t.rowPitch, 0);
 }
 R_BIND_SHADER {
 	CHECK_ID(shader);
-	shaders[shader.id].bind();
+	bind(shaders[shader.id]);
 }
 R_DRAW {
 	++this->drawCalls;
@@ -498,9 +573,7 @@ R_SET_BLEND {
 	}
 	immediateContext->OMSetBlendState(blend, v4{}.data(), ~0u);
 }
-R_DISABLE_BLEND {
-	immediateContext->OMSetBlendState(0, v4{}.data(), ~0u);
-}
+R_DISABLE_BLEND { immediateContext->OMSetBlendState(0, v4{}.data(), ~0u); }
 R_CLEAR_TARGET {
 	CHECK_ID(rt);
 	immediateContext->ClearRenderTargetView(renderTargets[rt.id].rtv, color.data());

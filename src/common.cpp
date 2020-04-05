@@ -1,4 +1,5 @@
 #include "common.h"
+#include "../dep/tl/include/tl/thread.h"
 
 #pragma warning(push, 0)
 #ifndef NOMINMAX
@@ -6,7 +7,51 @@
 #endif
 #include <Windows.h>
 #include <strsafe.h>
+
+#include <queue>
 #pragma warning(pop)
+
+struct WorkEntry {
+	void (*function)(void* params);
+	void* params;
+};
+
+std::queue<WorkEntry> workQueue;
+std::mutex workQueueMutex;
+
+void initWorkerThreads(u32 count) {
+	for (u32 i = 0; i < count; ++i) {
+		auto t = std::thread([&]() {
+			for (;;) {
+				std::optional<WorkEntry> entry;
+				workQueueMutex.lock();
+				if (workQueue.size()) {
+					entry.emplace(std::move(workQueue.front()));
+					workQueue.pop();
+				}
+				workQueueMutex.unlock();
+				if (entry) {
+					entry->function(entry->params);
+				} else {
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				}
+			}
+		});
+		t.detach();
+	}
+}
+void pushWork(void (*fn)(void*), void* param) {
+	workQueueMutex.lock();
+	workQueue.push({fn, param});
+	workQueueMutex.unlock();
+}
+void waitForWorkCompletion() {
+	for (;;) {
+		if (workQueue.size() == 0)
+			break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+}
 
 #if OS_WINDOWS
 s64 const PerfTimer::frequency = []() {

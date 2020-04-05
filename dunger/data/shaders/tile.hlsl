@@ -20,6 +20,7 @@ struct Tile {
 	float3 padding;
 };
 StructuredBuffer<Tile> tiles : register(t0);
+#define UV_CROP 0.01f
 void main(in uint i_id : SV_VertexID, out V2P o) {
 	const float2 offsets[] = {
 		float2(-.5,-.5),
@@ -28,10 +29,10 @@ void main(in uint i_id : SV_VertexID, out V2P o) {
 		float2( .5, .5),
 	};
 	const float2 uvs[] = {
-		float2(0,1),
-		float2(0,0),
-		float2(1,1),
-		float2(1,0),
+		float2(0+UV_CROP,1-UV_CROP),
+		float2(0+UV_CROP,0+UV_CROP),
+		float2(1-UV_CROP,1-UV_CROP),
+		float2(1-UV_CROP,0+UV_CROP),
 	};
 	const uint map[6] = { 0,1,2,2,1,3 };
 

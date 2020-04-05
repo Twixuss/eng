@@ -60,118 +60,10 @@ using namespace TL;
 #else
 #endif
 
-// single producer, single consumer
-namespace SPSC {
-template <class T, size_t capacity>
-struct CircularQueue {
-	CircularQueue() = default;
-	CircularQueue(CircularQueue const&) = delete;
-#define EMPLACE(name, param, assign) \
-	void name(param) {               \
-		getSpace();                  \
-		assign;                      \
-		++poppableCount;             \
-		increment(end);              \
-	}
-	template <class... Args>
-	EMPLACE(emplace, Args&&... args, new (std::addressof(end->val)) T(std::forward<Args>(args)...));
-	EMPLACE(push, T&& val, new (std::addressof(end->val)) T(std::move(val)));
-	EMPLACE(push, T const& val, new (std::addressof(end->val)) T(val));
-#undef EMPLACE
-	std::optional<T> pop() {
-		std::optional<T> result{};
-		if (poppableCount) {
-			--poppableCount;
-			result.emplace(std::move(begin->val));
-			begin->val.~T();
-			++pushableCount;
-			increment(begin);
-		}
-		return result;
-	}
-	size_t size() const { return poppableCount; }
 
-private:
-	union Entry {
-		T val;
-#pragma warning(suppress : 4582)
-		Entry() {}
-#pragma warning(suppress : 4583)
-		~Entry() {}
-#pragma warning(suppress : 4625)
-	};
-	Entry entries[capacity];
-	Entry* begin = entries;
-	Entry* end = begin;
-	std::atomic<size_t> poppableCount = 0;
-	std::atomic<size_t> pushableCount = capacity;
-	void increment(Entry*& e) {
-		if (++e == entries + capacity) {
-			e = entries;
-		}
-	}
-	void getSpace() {
-		while (pushableCount == 0) {
-#if !COMPILER_GCC
-			std::this_thread::sleep_for(std::chrono::microseconds(1));
-#endif
-		}
-		--pushableCount;
-	}
-};
-
-void circularQueueTest() {
-#if !COMPILER_GCC
-	{
-		struct Test {
-			Test() { puts("con"); }
-			Test(Test const&) { puts("cop"); }
-			Test(Test&&) { puts("mov"); }
-			~Test() { puts("des"); }
-		};
-		SPSC::CircularQueue<Test, 1> q;
-		puts("emplace");
-		q.emplace();
-		puts("pop");
-		q.pop();
-		{
-			puts("push &");
-			Test t;
-			q.push(t);
-			puts("pop");
-			q.pop();
-		}
-		puts("push &&");
-		q.push({});
-		puts("pop");
-		q.pop();
-	}
-
-	CircularQueue<u32, 128> queue;
-	bool done;
-	auto popperWork = [&]() {
-		u32 counter = 0;
-		while (!done || queue.size()) {
-			if (auto v = queue.pop(); v) {
-				ASSERT(v.value() == counter++);
-				// Sleep((DWORD)rand() & 1);
-			}
-		}
-	};
-	for (int j = 0; j < 2; ++j) {
-		done = false;
-		std::thread popper{popperWork};
-		for (u32 i = 0; i < 1024 * 1024; ++i) {
-			queue.push(i);
-			// Sleep((DWORD)rand() & 1);
-		}
-		done = true;
-		popper.join();
-	}
-#endif
-}
-
-} // namespace SPSC
+ENG_API void initWorkerThreads(u32 count);
+ENG_API void pushWork(void (*fn)(void*), void* param);
+ENG_API void waitForWorkCompletion();
 
 #if OS_WINDOWS
 struct ENG_API PerfTimer {
@@ -195,11 +87,11 @@ struct ENG_API PerfTimer {
 	}
 	template <class Ret = f32>
 	inline static Ret getMilliseconds(s64 begin, s64 end) {
-		return getMilliseconds<Ret>(begin - end);
+		return getMilliseconds<Ret>(end - begin);
 	}
 	template <class Ret = f32>
 	inline static Ret getMicroseconds(s64 begin, s64 end) {
-		return getMicroseconds<Ret>(begin - end);
+		return getMicroseconds<Ret>(end - begin);
 	}
 	template <class Ret = f32>
 	inline Ret getMilliseconds() {
