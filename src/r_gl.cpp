@@ -34,7 +34,7 @@ struct GLProc {
 	char const* name;
 };
 
-std::vector<GLProc> glProcs;
+List<GLProc> glProcs;
 struct GLProcAdder {
 	GLProcAdder(void** proc, char const* name) { glProcs.push_back({proc, name}); }
 };
@@ -90,7 +90,7 @@ R_CREATE_SHADER {
 		if (length) {
 			GLchar* infoLog = (GLchar*)malloc((size_t)length);
 			glGetShaderInfoLog(id, length, 0, infoLog);
-			puts(infoLog);
+			Log::warn(infoLog);
 			free(infoLog);
 		}
 	};

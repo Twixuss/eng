@@ -272,8 +272,8 @@ ParsedOBJ loadOBJ(char const* path) {
 
 template <class Vertex>
 struct LoadedMesh {
-	std::vector<Vertex> vertices;
-	std::vector<u32> indices;
+	List<Vertex> vertices;
+	List<u32> indices;
 };
 
 template <class Vertex>

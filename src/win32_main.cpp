@@ -3,13 +3,11 @@
 #include "input.h"
 #include "renderer.h"
 
-#pragma warning(push, 0)
-#include <Windows.h>
-#pragma warning(pop)
+#include "win32_common.h"
 
 #pragma warning(disable : 4191)
 
-char const* winMessageToString(UINT msg) {
+char const *winMessageToString(UINT msg) {
 #define C(x) \
 	case x: return #x;
 	switch (msg) {
@@ -35,7 +33,7 @@ char const* winMessageToString(UINT msg) {
 		C(WM_SYSCOLORCHANGE);
 		C(WM_ENDSESSION);
 		C(WM_SHOWWINDOW);
-		//C(WM_CTLCOLOR);
+		// C(WM_CTLCOLOR);
 		C(WM_WININICHANGE);
 		C(WM_DEVMODECHANGE);
 		C(WM_ACTIVATEAPP);
@@ -68,7 +66,7 @@ char const* winMessageToString(UINT msg) {
 		C(WM_WINDOWPOSCHANGING);
 		C(WM_WINDOWPOSCHANGED);
 		C(WM_POWER);
-		//C(WM_COPYGLOBALDATA);
+		// C(WM_COPYGLOBALDATA);
 		C(WM_COPYDATA);
 		C(WM_CANCELJOURNAL);
 		C(WM_NOTIFY);
@@ -115,10 +113,10 @@ char const* winMessageToString(UINT msg) {
 		C(WM_SYSCHAR);
 		C(WM_SYSDEADCHAR);
 		C(WM_UNICHAR);
-		//C(WM_WNT_CONVERTREQUESTEX);
-		//C(WM_CONVERTREQUEST);
-		//C(WM_CONVERTRESULT);
-		//C(WM_INTERIM);
+		// C(WM_WNT_CONVERTREQUESTEX);
+		// C(WM_CONVERTREQUEST);
+		// C(WM_CONVERTRESULT);
+		// C(WM_INTERIM);
 		C(WM_IME_STARTCOMPOSITION);
 		C(WM_IME_ENDCOMPOSITION);
 		C(WM_IME_COMPOSITION);
@@ -130,7 +128,7 @@ char const* winMessageToString(UINT msg) {
 		C(WM_VSCROLL);
 		C(WM_INITMENU);
 		C(WM_INITMENUPOPUP);
-		//C(WM_SYSTIMER);
+		// C(WM_SYSTIMER);
 		C(WM_MENUSELECT);
 		C(WM_MENUCHAR);
 		C(WM_ENTERIDLE);
@@ -188,7 +186,7 @@ char const* winMessageToString(UINT msg) {
 		C(WM_EXITSIZEMOVE);
 		C(WM_DROPFILES);
 		C(WM_MDIREFRESHMENU);
-		//C(WM_IME_REPORT);
+		// C(WM_IME_REPORT);
 		C(WM_IME_SETCONTEXT);
 		C(WM_IME_NOTIFY);
 		C(WM_IME_CONTROL);
@@ -196,9 +194,9 @@ char const* winMessageToString(UINT msg) {
 		C(WM_IME_SELECT);
 		C(WM_IME_CHAR);
 		C(WM_IME_REQUEST);
-		//C(WM_IMEKEYDOWN);
+		// C(WM_IMEKEYDOWN);
 		C(WM_IME_KEYDOWN);
-		//C(WM_IMEKEYUP);
+		// C(WM_IMEKEYUP);
 		C(WM_IME_KEYUP);
 		C(WM_NCMOUSEHOVER);
 		C(WM_MOUSEHOVER);
@@ -231,16 +229,16 @@ char const* winMessageToString(UINT msg) {
 		C(WM_AFXFIRST);
 		C(WM_AFXLAST);
 		C(WM_PENWINFIRST);
-		//C(WM_RCRESULT);
-		//C(WM_HOOKRCRESULT);
-		//C(WM_GLOBALRCCHANGE);
-		//C(WM_PENMISCINFO);
-		//C(WM_SKB);
-		//C(WM_HEDITCTL);
-		//C(WM_PENCTL);
-		//C(WM_PENMISC);
-		//C(WM_CTLINIT);
-		//C(WM_PENEVENT);
+		// C(WM_RCRESULT);
+		// C(WM_HOOKRCRESULT);
+		// C(WM_GLOBALRCCHANGE);
+		// C(WM_PENMISCINFO);
+		// C(WM_SKB);
+		// C(WM_HEDITCTL);
+		// C(WM_PENCTL);
+		// C(WM_PENMISC);
+		// C(WM_CTLINIT);
+		// C(WM_PENEVENT);
 		C(WM_PENWINLAST);
 		C(WM_USER);
 		C(WM_CHOOSEFONT_GETLOGFONT);
@@ -249,25 +247,25 @@ char const* winMessageToString(UINT msg) {
 		C(WM_PSD_GREEKTEXTRECT);
 		C(WM_PSD_ENVSTAMPRECT);
 		C(WM_PSD_YAFULLPAGERECT);
-		//C(WM_CAP_UNICODE_START);
+		// C(WM_CAP_UNICODE_START);
 		C(WM_CHOOSEFONT_SETLOGFONT);
-		//C(WM_CAP_SET_CALLBACK_ERRORW);
+		// C(WM_CAP_SET_CALLBACK_ERRORW);
 		C(WM_CHOOSEFONT_SETFLAGS);
-		//C(WM_CAP_SET_CALLBACK_STATUSW);
-		//C(WM_CAP_DRIVER_GET_NAMEW);
-		//C(WM_CAP_DRIVER_GET_VERSIONW);
-		//C(WM_CAP_FILE_SET_CAPTURE_FILEW);
-		//C(WM_CAP_FILE_GET_CAPTURE_FILEW);
-		//C(WM_CAP_FILE_SAVEASW);
-		//C(WM_CAP_FILE_SAVEDIBW);
-		//C(WM_CAP_SET_MCI_DEVICEW);
-		//C(WM_CAP_GET_MCI_DEVICEW);
-		//C(WM_CAP_PAL_OPENW);
-		//C(WM_CAP_PAL_SAVEW);
-		//C(WM_CPL_LAUNCH);
-		//C(WM_CPL_LAUNCHED);
+		// C(WM_CAP_SET_CALLBACK_STATUSW);
+		// C(WM_CAP_DRIVER_GET_NAMEW);
+		// C(WM_CAP_DRIVER_GET_VERSIONW);
+		// C(WM_CAP_FILE_SET_CAPTURE_FILEW);
+		// C(WM_CAP_FILE_GET_CAPTURE_FILEW);
+		// C(WM_CAP_FILE_SAVEASW);
+		// C(WM_CAP_FILE_SAVEDIBW);
+		// C(WM_CAP_SET_MCI_DEVICEW);
+		// C(WM_CAP_GET_MCI_DEVICEW);
+		// C(WM_CAP_PAL_OPENW);
+		// C(WM_CAP_PAL_SAVEW);
+		// C(WM_CPL_LAUNCH);
+		// C(WM_CPL_LAUNCHED);
 		C(WM_APP);
-		//C(WM_RASDIALEVENT);
+		// C(WM_RASDIALEVENT);
 	}
 #undef C
 	return "";
@@ -275,7 +273,7 @@ char const* winMessageToString(UINT msg) {
 struct Win32Window final : Window {
 	bool exitSizeMove;
 };
-void initWindow(Win32Window& window, HINSTANCE instance, v2u clientSize, bool resizeable) {
+void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool resizeable) {
 	PROFILE_FUNCTION;
 
 	window = {};
@@ -294,10 +292,10 @@ void initWindow(Win32Window& window, HINSTANCE instance, v2u clientSize, bool re
 	wndClass.hInstance = instance;
 	wndClass.lpfnWndProc = [](HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) -> LRESULT {
 		if (msg == WM_CREATE) {
-			SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTA*)lp)->lpCreateParams);
+			SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTA *)lp)->lpCreateParams);
 			return 0;
 		}
-		Win32Window* window = (Win32Window*)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
+		Win32Window *window = (Win32Window *)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
 		if (window) {
 			switch (msg) {
 				case WM_DESTROY: {
@@ -320,7 +318,7 @@ void initWindow(Win32Window& window, HINSTANCE instance, v2u clientSize, bool re
 					window->exitSizeMove = true;
 				}
 			}
-			//puts(winMessageToString(msg));
+			// puts(winMessageToString(msg));
 		}
 		return DefWindowProcA(hwnd, msg, wp, lp);
 	};
@@ -342,8 +340,8 @@ void initWindow(Win32Window& window, HINSTANCE instance, v2u clientSize, bool re
 
 	timeBeginPeriod(1);
 }
-void destroyWindow(Win32Window& window) { timeEndPeriod(1); }
-void processMessages(Win32Window& window, Input& input) {
+void destroyWindow(Win32Window &window) { timeEndPeriod(1); }
+void processMessages(Win32Window &window, Input &input) {
 	PROFILE_FUNCTION;
 	input.swap();
 	MSG msg;
@@ -374,7 +372,7 @@ void processMessages(Win32Window& window, Input& input) {
 					INVALID_CODE_PATH("Error: GetRawInputData");
 				}
 				if (rawInput.header.dwType == RIM_TYPEMOUSE) {
-					auto& mouse = rawInput.data.mouse;
+					auto &mouse = rawInput.data.mouse;
 					input.mouseDelta += {mouse.lLastX, mouse.lLastY};
 					if (mouse.usButtonFlags & RI_MOUSE_WHEEL)
 						input.mouseWheel += (s16)mouse.usButtonData;
@@ -414,7 +412,8 @@ void processMessages(Win32Window& window, Input& input) {
 	input.mousePosition.x = p.x;
 	input.mousePosition.y = p.y;
 }
-void finalizeFrame(Win32Window& window, s64& lastPerfCounter, Time& time) {
+void finalizeFrame(Win32Window &window, s64 &lastPerfCounter, Time &time) {
+	PROFILE_FUNCTION;
 	window.lostFocus = false;
 	window.resized = false;
 	window.exitSizeMove = false;
@@ -438,7 +437,6 @@ void finalizeFrame(Win32Window& window, s64& lastPerfCounter, Time& time) {
 }
 
 Input createInput() {
-	PROFILE_FUNCTION;
 	RAWINPUTDEVICE mouse = {};
 	mouse.usUsagePage = 0x01;
 	mouse.usUsage = 0x02;
@@ -451,72 +449,192 @@ Input createInput() {
 	return input;
 }
 
+#include <dsound.h>
+#pragma comment(lib,  "dsound")
+struct Win32Audio {
+	static constexpr u32 numChannels = 2;
+	static constexpr u32 bytesPerSample = sizeof(s16) * numChannels;
+	Audio audio;
+	LPDIRECTSOUNDBUFFER soundBuffer;
+	u32 runningSampleIndex;
+	u32 soundBufferSize;
+	DWORD lastPlayCursor;
+
+	void fillSoundBuffer(GameState& game, DWORD ByteToLock, DWORD BytesToWrite) {
+		void* Region1;
+		void* Region2;
+		DWORD Region1Size;
+		DWORD Region2Size;
+		DHR(soundBuffer->Lock(ByteToLock, BytesToWrite, &Region1, &Region1Size, &Region2, &Region2Size, 0));
+		ASSERT(Region1Size % bytesPerSample == 0);
+		ASSERT(Region2Size % bytesPerSample == 0);
+
+		DWORD Region1SampleCount = Region1Size / bytesPerSample;
+		DWORD Region2SampleCount = Region2Size / bytesPerSample;
+
+		if (Region1SampleCount) GameAPI::fillSoundBuffer(game, audio, (s16*)Region1, Region1SampleCount);
+		if (Region2SampleCount) GameAPI::fillSoundBuffer(game, audio, (s16*)Region2, Region2SampleCount);
+
+		runningSampleIndex += Region1SampleCount + Region2SampleCount;
+
+		DHR(soundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size));
+	}
+	void fillFrame(GameState& game) {
+		auto latencySampleCount = audio.sampleRate / 12;
+		u32 ByteToLock = (runningSampleIndex * bytesPerSample) % soundBufferSize;
+		u32 TargetCursor = (lastPlayCursor + latencySampleCount * bytesPerSample) % soundBufferSize;
+		u32 BytesToWrite;
+		if (ByteToLock > TargetCursor) {
+			BytesToWrite = soundBufferSize - ByteToLock + TargetCursor;
+		} else {
+			BytesToWrite = TargetCursor - ByteToLock;
+		}
+		if (BytesToWrite) { // TODO: ???
+			fillSoundBuffer(game, ByteToLock, BytesToWrite);
+		}
+	}
+};
+
+Win32Audio createAudio(HWND hwnd) {
+	PROFILE_FUNCTION;
+
+	Win32Audio result;
+
+	result.lastPlayCursor = 0;
+	result.runningSampleIndex = 0;
+	result.audio.sampleRate = 48000;
+
+	LPDIRECTSOUND dsound;
+	DHR(DirectSoundCreate(0, &dsound, 0));
+	DHR(dsound->SetCooperativeLevel(hwnd, DSSCL_PRIORITY));
+
+	DSBUFFERDESC desc = {};
+	desc.dwSize = sizeof(desc);
+	desc.dwFlags = DSBCAPS_PRIMARYBUFFER;
+
+	LPDIRECTSOUNDBUFFER PrimaryBuffer;
+	DHR(dsound->CreateSoundBuffer(&desc, &PrimaryBuffer, 0));
+
+	WAVEFORMATEX wfx;
+
+	wfx.wFormatTag = WAVE_FORMAT_PCM;
+	wfx.nChannels = result.numChannels;
+	wfx.nSamplesPerSec = result.audio.sampleRate;
+	wfx.wBitsPerSample = result.bytesPerSample * 8u / result.numChannels;
+	wfx.nBlockAlign = result.bytesPerSample;
+	wfx.nAvgBytesPerSec = result.bytesPerSample * result.audio.sampleRate;
+	wfx.cbSize = sizeof(wfx);
+
+	DHR(PrimaryBuffer->SetFormat(&wfx));
+
+	u32 bufferLengthInSeconds = 1;
+	result.soundBufferSize = wfx.nAvgBytesPerSec * bufferLengthInSeconds;
+	desc.dwBufferBytes = result.soundBufferSize;
+	desc.dwFlags = 0;
+	desc.lpwfxFormat = &wfx;
+
+	DHR(dsound->CreateSoundBuffer(&desc, &result.soundBuffer, 0));
+
+	return result;
+}
+
+Renderer createRenderer(char const *rendererName, Window &window, u32 sampleCount) {
+	PROFILE_FUNCTION;
+	char rendererLibName[256];
+	sprintf(rendererLibName, "r_%s.dll", rendererName);
+
+	HMODULE renderModule = LoadLibraryA(rendererLibName);
+	if (!renderModule) {
+		INVALID_CODE_PATH("%s not found", rendererLibName);
+	}
+
+	auto exportedFunctions = (Renderer::ExportedFunctions *)GetProcAddress(renderModule, "exportedFunctions");
+	if (!exportedFunctions) {
+		INVALID_CODE_PATH("'exportedFunctions' not found in %s", rendererLibName);
+	}
+
+	bool foundAllProcs = true;
+	Renderer renderer;
+	renderer.window = &window;
+	renderer.drawCalls = 0;
+	for (auto &entry : *exportedFunctions) {
+		auto proc = (void *)GetProcAddress(renderModule, entry.name);
+		if (!proc) {
+			foundAllProcs = false;
+			Log::print("Funcion '%s' not found in %s", entry.name, rendererLibName);
+		}
+		(&renderer.functions)[entry.memberOffset] = proc;
+	}
+	if (!foundAllProcs)
+		INVALID_CODE_PATH("Not all procs found in %s", rendererLibName);
+		
+	renderer.init(sampleCount);
+
+	return renderer;
+}
+
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	try {
+		Profiler::reset();
+		PROFILE_BEGIN("mainStartup");
+
+		PROFILE_BEGIN("AllocConsole");
 		AllocConsole();
 		freopen("CONOUT$", "w", stdout);
+		PROFILE_END;
 
 		// testAllocator();
 		// mathTest();
 		// SPSC::circularQueueTest();
 
-		CREATE_PROFILER;
+		StartInfo startInfo{};
+		startInfo.clientSize = {1600, 900};
+		startInfo.resizeable = true;
+		startInfo.sampleCount = 1;
+		startInfo.workerThreadCount = cpuInfo.logicalProcessorCount;
 
-		StartupInfo startupInfo{};
-		startupInfo.clientSize = {1280, 720};
-		startupInfo.resizeable = true;
-		startupInfo.sampleCount = 1;
-		GameAPI::fillStartupInfo(startupInfo);
+		GameAPI::fillStartInfo(startInfo);
+
+		if(startInfo.workerThreadCount > cpuInfo.logicalProcessorCount) {
+			startInfo.workerThreadCount = cpuInfo.logicalProcessorCount;
+			Log::warn("WARNING: Clamping 'startInfo.workerThreadCount' to number of CPU cores (%u)", cpuInfo.logicalProcessorCount);
+		}
+
+		initWorkerThreads(startInfo.workerThreadCount);
 
 		Win32Window window;
-		initWindow(window, instance, startupInfo.clientSize, startupInfo.resizeable);
+		initWindow(window, instance, startInfo.clientSize, startInfo.resizeable);
 		DEFER { destroyWindow(window); };
 
-		char const* rendererName = "d3d11";
-		char rendererLibName[256];
-		sprintf(rendererLibName, "r_%s.dll", rendererName);
-
-		HMODULE renderModule = LoadLibraryA(rendererLibName);
-		if (!renderModule) {
-			printf("%s not found\n", rendererLibName);
-			INVALID_CODE_PATH("renderer not loaded");
-		}
-
-		auto exportedFunctions = (Renderer::ExportedFunctions*)GetProcAddress(renderModule, "exportedFunctions");
-		if (!exportedFunctions) {
-			printf("'exportedFunctions' not found in %s", rendererLibName);
-			INVALID_CODE_PATH("renderer not loaded");
-		}
-
-		bool foundAllProcs = true;
 		Renderer renderer;
-		renderer.window = &window;
-		renderer.drawCalls = 0;
-		for (auto& entry : *exportedFunctions) {
-			auto proc = (void*)GetProcAddress(renderModule, entry.name);
-			if (!proc) {
-				foundAllProcs = false;
-				printf("Funcion '%s' not found in %s\n", entry.name, rendererLibName);
-			}
-			(&renderer.functions)[entry.memberOffset] = proc;
-		}
-		if (!foundAllProcs)
-			INVALID_CODE_PATH("got not all procs");
-
-		renderer.init(startupInfo.sampleCount);
+		pushWork("createRenderer", [&] {
+			renderer = createRenderer("d3d11", window, startInfo.sampleCount);
+		});
 		DEFER { renderer.shutdown(); };
 
-		Input input = createInput();
+		Win32Audio win32Audio;
+		pushWork("createAudio", [&] {
+			win32Audio = createAudio((HWND)window.handle);
+		});
 
-		SYSTEM_INFO sysInfo;
-		GetSystemInfo(&sysInfo);
-		
-		initWorkerThreads(sysInfo.dwNumberOfProcessors);
+		Input input;
+		pushWork("createInput", [&] {
+			input = createInput();
+		});
 
-		Game* game = GameAPI::start(window, renderer);
+		completeAllWork();
+
+		PROFILE_END;
+
+		GameState *game = GameAPI::start(window, renderer);
 		if (!game)
 			return -1;
 		DEFER { GameAPI::shutdown(*game); };
+		
+		win32Audio.fillSoundBuffer(*game, 0, win32Audio.soundBufferSize);
+		DHR(win32Audio.soundBuffer->Play(0, 0, DSBPLAY_LOOPING));
+
+		ShowCursor(false);
 
 		Time time;
 
@@ -527,7 +645,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 		s64 lastPerfCounter = PerfTimer::getCounter();
 		while (window.open) {
-			PROFILE_SCOPE("Frame #%llu", time.frameCount);
+			Profiler::reset();
+			resetThreadStats();
 
 			processMessages(window, input);
 			if (window.resized) {
@@ -538,12 +657,25 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
 			GameAPI::update(*game, window, renderer, input, time);
 
-			renderer.render();
+			renderer.present();
+
+			win32Audio.fillFrame(*game);
 
 			finalizeFrame(window, lastPerfCounter, time);
+
+			
+			DWORD PlayCursor;
+			DWORD WriteCursor;
+			DHR(win32Audio.soundBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor));
+
+			win32Audio.lastPlayCursor = PlayCursor;
+
 		}
+
+		shutdownWorkerThreads();
+
 		return 0;
-	} catch (std::runtime_error& e) {
+	} catch (std::runtime_error &e) {
 		MessageBoxA(0, e.what(), "std::runtime_error", MB_OK);
 	}
 	return -1;

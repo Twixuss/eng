@@ -2,6 +2,7 @@
 #include "common.h"
 #include "renderer.h"
 #include "window.h"
+#include "win32_common.h"
 
 #define D3D11_NO_HELPERS
 
@@ -16,20 +17,6 @@
 
 #include <vector>
 #pragma warning(pop)
-
-#define DHR(call)               \
-	do {                        \
-		HRESULT dhr = call;     \
-		ASSERT(SUCCEEDED(dhr)); \
-	} while (0)
-
-#define RELEASE_ZERO(x)   \
-	do {                  \
-		if (x) {          \
-			x->Release(); \
-			x = 0;        \
-		}                 \
-	} while (0)
 
 namespace D3D11 {
 
@@ -62,7 +49,7 @@ static typename Shader::Type createShader(StringView src, char const* name, D3D_
 	HRESULT compileResult = D3DCompile(src.data(), src.size(), name, defines, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main",
 									   Shader::target, 0, 0, &code, &messages);
 	if (messages) {
-		puts((char const*)messages->GetBufferPointer());
+		Log::warn((char const*)messages->GetBufferPointer());
 		messages->Release();
 	}
 	DHR(compileResult);
@@ -112,6 +99,7 @@ D3D11_TEXTURE_ADDRESS_MODE cvtAddress(Address address) {
 		case Address::wrap: return D3D11_TEXTURE_ADDRESS_WRAP;
 		case Address::clamp: return D3D11_TEXTURE_ADDRESS_CLAMP;
 		case Address::mirror: return D3D11_TEXTURE_ADDRESS_MIRROR;
+		case Address::border: return D3D11_TEXTURE_ADDRESS_BORDER;
 		default: INVALID_CODE_PATH("bad address");
 	}
 }
@@ -355,6 +343,19 @@ void bind(Texture& tex, Stage stage, u32 slot) {
 		default: INVALID_CODE_PATH("Bad shader stage"); break;
 	}
 }
+void setupGlobals() {
+	PROFILE_FUNCTION;
+
+	immediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	matrixCBuffer = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
+								 sizeof(matrixCBufferData), 0, 0, 0);
+	screenInfoCB = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
+								sizeof(screenInfoCBD), 0, 0, 0);
+	immediateContext->VSSetConstantBuffers(0, 1, &screenInfoCB);
+	immediateContext->PSSetConstantBuffers(0, 1, &screenInfoCB);
+	immediateContext->VSSetConstantBuffers(1, 1, &matrixCBuffer);
+	immediateContext->PSSetConstantBuffers(1, 1, &matrixCBuffer);
+}
 R_INIT {
 	PROFILE_FUNCTION;
 
@@ -375,16 +376,7 @@ R_INIT {
 #endif
 	DHR(D3D11CreateDeviceAndSwapChain(0, D3D_DRIVER_TYPE_HARDWARE, 0, flags, 0, 0, D3D11_SDK_VERSION, &swapChainDesc,
 									  &swapChain, &device, 0, &immediateContext));
-
-	immediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	matrixCBuffer = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
-								 sizeof(matrixCBufferData), 0, 0, 0);
-	screenInfoCB = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
-								sizeof(screenInfoCBD), 0, 0, 0);
-	immediateContext->VSSetConstantBuffers(0, 1, &screenInfoCB);
-	immediateContext->PSSetConstantBuffers(0, 1, &screenInfoCB);
-	immediateContext->VSSetConstantBuffers(1, 1, &matrixCBuffer);
-	immediateContext->PSSetConstantBuffers(1, 1, &matrixCBuffer);
+	setupGlobals();
 }
 R_CREATE_RT {
 	auto rt = std::find_if(std::begin(renderTargets), std::end(renderTargets),
@@ -437,7 +429,7 @@ R_BIND_BUFFER {
 	CHECK_ID(buffer);
 	bind(buffers[buffer.id], stage, slot);
 }
-ID3D11SamplerState** initSampler(Address address, Filter filter) {
+ID3D11SamplerState** initSampler(Address address, Filter filter, v4 borderColor) {
 	auto sampler = &samplers[(u32)address][(u32)filter];
 	if (*sampler == 0) {
 		D3D11_SAMPLER_DESC desc{};
@@ -445,6 +437,7 @@ ID3D11SamplerState** initSampler(Address address, Filter filter) {
 		desc.Filter = cvtFilter(filter);
 		desc.MaxAnisotropy = 16;
 		desc.MaxLOD = FLT_MAX;
+		memcpy(desc.BorderColor, &borderColor, sizeof(borderColor));
 		DHR(device->CreateSamplerState(&desc, sampler));
 	}
 	return sampler;
@@ -453,7 +446,7 @@ R_CREATE_TEXTURE_FROM_FILE {
 	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
 	ASSERT(tex != std::end(textures), "out of textures");
 	DHR(D3DX11CreateShaderResourceViewFromFileA(device, path, 0, 0, &tex->srv, 0));
-	tex->samplerIndex = (u32)(initSampler(address, filter) - &samplers[0][0]);
+	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 
 	tex->srv->GetResource((ID3D11Resource**)&tex->texture);
 
@@ -486,7 +479,7 @@ R_CREATE_TEXTURE {
 		desc.Texture2D.MipLevels = 1;
 		DHR(device->CreateShaderResourceView(tex->texture, &desc, &tex->srv));
 	}
-	tex->samplerIndex = (u32)(initSampler(address, filter) - &samplers[0][0]);
+	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 	tex->rowPitch = getSize(dxgiFormat) * width;
 	return {(u32)(tex - std::begin(textures))};
 }
@@ -503,18 +496,18 @@ R_CREATE_SHADER {
 	sprintf(buffer, "%s.hlsl", path);
 	path = buffer;
 
-	auto shaderFile = readFile(path);
-	ASSERT(shaderFile.valid());
+	auto shaderFile = readEntireFile(path);
+	ASSERT(shaderFile.data());
 
 	StringSpan shaderSource;
 
 	if (prefix.size()) {
-		u32 totalSize = (u32)(shaderFile.data.size() + prefix.size());
+		u32 totalSize = (u32)(shaderFile.size() + prefix.size());
 		shaderSource = {(char*)malloc(totalSize), totalSize};
 		memcpy(shaderSource.begin(), prefix.begin(), prefix.size());
-		memcpy(shaderSource.begin() + prefix.size(), shaderFile.data.begin(), shaderFile.data.size());
+		memcpy(shaderSource.begin() + prefix.size(), shaderFile.begin(), shaderFile.size());
 	} else {
-		shaderSource = shaderFile.data;
+		shaderSource = shaderFile;
 	}
 
 	size_t const definesCount = 1;
@@ -531,7 +524,7 @@ R_CREATE_SHADER {
 	if (prefix.size()) {
 		free(shaderSource.begin());
 	}
-	shaderFile.release();
+	freeEntireFile(shaderFile);
 	return {(u32)(shader - std::begin(shaders))};
 }
 R_RELEASE_SHADER {
@@ -543,7 +536,7 @@ R_RELEASE_RT {
 	release(renderTargets[rt.id]);
 }
 R_PREPARE {}
-R_RENDER {
+R_PRESENT {
 	DHR(swapChain->Present(this->window->fullscreen, 0));
 	this->drawCalls = 0;
 }

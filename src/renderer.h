@@ -12,27 +12,28 @@ ID(Shader);
 ID(Buffer);
 ID(Texture);
 ID(RenderTarget);
+#undef ID
 
 enum class Stage { vs, ps };
-enum class Address { wrap, clamp, mirror, count };
+enum class Address { wrap, clamp, mirror, border, count };
 enum class Filter { point_point, point_linear, linear_point, linear_linear, anisotropic, count };
 enum class Blend { one, zero, srcAlpha, invSrcAlpha, dstAlpha, invDstAlpha, count };
 enum class BlendOp { add, subtract, min, max, invSubtract, count };
 enum class Format { UN_RGB8, F_R32, F_RGB32, F_RGBA16, count };
 
-#define RNAME(name) CONCAT(_, name)
+#define RNAME(name) CONCAT(_r_, name)
 
 // clang-format off
 #define R_INIT						R_DECORATE(void, init, (u32 sampleCount), (sampleCount))
 #define R_SHUTDOWN					R_DECORATE(void, shutdown, (), ())
 #define R_RESIZE					R_DECORATE(void, resize, (v2u clientSize), (clientSize))
 #define R_PREPARE					R_DECORATE(void, prepare, (), ())
-#define R_RENDER					R_DECORATE(void, render, (), ())
+#define R_PRESENT					R_DECORATE(void, present, (), ())
 #define R_CLEAR_TARGET				R_DECORATE(void, clearRenderTarget, (RenderTargetId rt, v4 color), (rt, color))
 #define R_CREATE_BUFFER				R_DECORATE(BufferId, createBuffer, (void const* data, u32 stride, u32 count), (data, stride, count))
 #define R_CREATE_SHADER				R_DECORATE(ShaderId, createShader, (char const* path, StringView prefix), (path, prefix))
-#define R_CREATE_TEXTURE_FROM_FILE	R_DECORATE(TextureId, createTextureFromFile, (char const* path, Address address, Filter filter), (path, address, filter))
-#define R_CREATE_TEXTURE			R_DECORATE(TextureId, createTexture, (Format format, u32 width, u32 height, Address address, Filter filter), (format, width, height, address, filter))
+#define R_CREATE_TEXTURE_FROM_FILE	R_DECORATE(TextureId, createTextureFromFile, (char const* path, Address address, Filter filter, v4 borderColor), (path, address, filter, borderColor))
+#define R_CREATE_TEXTURE			R_DECORATE(TextureId, createTexture, (Format format, u32 width, u32 height, Address address, Filter filter, v4 borderColor), (format, width, height, address, filter, borderColor))
 #define R_CREATE_RT					R_DECORATE(RenderTargetId, createRenderTarget, (v2u size, Format format, u32 sampleCount), (size, format, sampleCount))
 #define R_DRAW						R_DECORATE(void, draw, (u32 vertexCount, u32 offset), (vertexCount, offset))
 #define R_UPDATE_BUFFER				R_DECORATE(void, updateBuffer, (BufferId buffer, void const* data, u32 size), (buffer, data, size))
@@ -54,7 +55,7 @@ enum class Format { UN_RGB8, F_R32, F_RGB32, F_RGBA16, count };
 	R_SHUTDOWN;                 \
 	R_RESIZE;                   \
 	R_PREPARE;                  \
-	R_RENDER;                   \
+	R_PRESENT;                   \
 	R_CLEAR_TARGET;             \
 	R_CREATE_SHADER;            \
 	R_CREATE_RT;                \
@@ -102,10 +103,16 @@ struct Renderer {
 #undef R_DECORATE
 #undef ADD_ARG
 
-	FORCEINLINE void draw(u32 Count) { return draw(Count, 0); }
+	FORCEINLINE void draw(u32 count) { return draw(count, 0); }
 	FORCEINLINE ShaderId createShader(char const* path) { return createShader(path, {}); }
+	FORCEINLINE TextureId createTextureFromFile(char const* path, Address address, Filter filter) {
+		return createTextureFromFile(path, address, filter, {});
+	}
 	FORCEINLINE TextureId createTexture(char const* path, Address address, Filter filter) {
 		return createTextureFromFile(path, address, filter);
+	}
+	FORCEINLINE TextureId createTexture(Format format, u32 width, u32 height, Address address, Filter filter) {
+		return createTexture(format, width, height, address, filter, {});
 	}
 	FORCEINLINE RenderTargetId createRenderTarget(v2u size) { return createRenderTarget(size, Format::UN_RGB8, 1); }
 	FORCEINLINE RenderTargetId createRenderTarget(v2u size, u32 sampleCount) {

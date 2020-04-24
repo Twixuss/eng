@@ -28,8 +28,8 @@ float4 main(in V2P i) : SV_Target {
 	float4 diffuse = diffuseTexture.Sample(diffuseSampler, i.uv);
 	float4 light = lightTexture.Sample(lightSampler, i.uv);
 	float4 voxels = voxelsTexture.Sample(voxelsSampler, i.voxelUv);
-	if(i.voxelUv.x < 0 || i.voxelUv.x > 1 || i.voxelUv.y < 0 || i.voxelUv.y > 1)
-		voxels = 1;
+	//if(i.voxelUv.x < 0 || i.voxelUv.x > 1 || i.voxelUv.y < 0 || i.voxelUv.y > 1)
+	//	voxels = 1;
 	return diffuse * (light + voxels);
 }
 #endif
