@@ -2,6 +2,6 @@
 bin/*
 */bin/*
 *.pdb
-tool/*
+*/.vs/*
 temp/*
 *.wav
