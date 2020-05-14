@@ -1,5 +1,6 @@
 #include "eng.h"
 #include "common.cpp"
+#include "renderer.cpp"
 
 #pragma pack(push, 1)
 struct WavSubchunk {
@@ -25,10 +26,15 @@ struct WavHeader {
 #pragma pack(pop)
 
 SoundBuffer loadWaveFile(char const *path) {
+	PROFILE_FUNCTION;
+
 	SoundBuffer result{};
 
 	auto file = readEntireFile(path);
-	while (file.size()) {
+	do {
+		if (!file.size())
+			break;
+		
 		auto &header = *(WavHeader *)file.data();
 
 		if (memcmp(&header.chunkId, "RIFF", 4) != 0)
@@ -56,8 +62,9 @@ SoundBuffer loadWaveFile(char const *path) {
 		result.sampleCount = dataSubchunk->size / header.blockAlign;
 		result.numChannels = header.numChannels;
 		result.bitsPerSample = header.bitsPerSample;
-		break;
-	}
+
+	} while (0);
+
 	if (result._alloc != file.data()) {
 		freeEntireFile(file);
 	}

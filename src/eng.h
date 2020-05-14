@@ -8,6 +8,7 @@
 struct StartInfo {
 	v2u clientSize;
 	u32 workerThreadCount;
+	RenderingApi renderingApi;
 	u8 sampleCount;
 	bool resizeable;
 };

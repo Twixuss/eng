@@ -39,11 +39,25 @@ void spinlock(Pred pred, bool volatile *stop = 0) {
 	}
 }
 
-struct WorkEntry {
-	void (*function)(void *param);
-	void *param;
-	char const *name;
-};
+static void (*pushWorkImpl)(WorkQueue *queue, void (*fn)(void *), void *param, char const *name);
+static void (*waitForWorkCompletionImpl)(WorkQueue *);
+
+static ThreadStats threadStats;
+void resetThreadStats() {
+	for (auto &stat : threadStats)
+		stat.clear();
+}
+ThreadStats &getThreadStats() { return threadStats; }
+
+void doWork(u32 threadIndex, void (*fn)(void *), void *param, char const *name, WorkQueue *queue) {
+	WorkStat stat;
+	stat.workName = name;
+	stat.startCycle = __rdtsc();
+	fn(param);
+	stat.endCycle = __rdtsc();
+	threadStats[threadIndex].push_back(stat);
+	InterlockedDecrement(&queue->workToDo);
+}
 
 struct SPMC_WorkQueue {
 	std::queue<WorkEntry> queue;
@@ -65,51 +79,31 @@ struct SPMC_WorkQueue {
 	}
 };
 
-struct WorkQueue {
+struct GlobalWorkQueue {
 	SPSC::CircularQueue<WorkEntry, 1024> single;
 	SPMC_WorkQueue multi;
 };
-static WorkQueue workQueue;
-static void (*pushWorkImpl)(void (*fn)(void *), void *param, char const *name);
-static void (*waitForWorkCompletionImpl)();
 
-static List<List<ThreadStat>> threadStats;
-void resetThreadStats() {
-	for (auto &stat : threadStats)
-		stat.clear();
-}
-List<List<ThreadStat>> &getThreadStats() { return threadStats; }
-static u32 volatile workToDo = 0;
-
-void doWork(u32 threadIndex, void (*fn)(void *), void *param, char const *name) {
-	ThreadStat stat;
-	stat.workName = name;
-	stat.cycles = __rdtsc();
-	fn(param);
-	stat.cycles = __rdtsc() - stat.cycles;
-	threadStats[threadIndex].push_back(stat);
-	InterlockedDecrement(&workToDo);
-}
-
+static GlobalWorkQueue globalWorkQueue;
 static u32 workerCount = 0;
 static bool volatile stopWork = false;
 static u32 volatile deadWorkers = 0;
 void initWorkerThreads(u32 count) {
 	PROFILE_FUNCTION;
 	workerCount = count;
-	threadStats.resize(max(count, 1u));
+	threadStats.resize(max(count + 1u, 1u));
 	if (count == 0) {
-		pushWorkImpl = [](void (*fn)(void *), void *param, char const *name) { doWork(0, fn, param, name); };
-		waitForWorkCompletionImpl = []() {};
+		pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) { doWork(0, fn, param, name, queue); };
+		waitForWorkCompletionImpl = [](WorkQueue *queue) {};
 	} else {
-		waitForWorkCompletionImpl = []() { spinlock([] { return workToDo == 0; }); };
+		waitForWorkCompletionImpl = [](WorkQueue *queue) { spinlock([queue] { return queue->completed(); }); };
 		if (count == 1) {
 			std::thread([]() {
 				for (;;) {
 					spinlock(
 						[] {
-							if (auto entry = workQueue.single.pop()) {
-								doWork(0, entry->function, entry->param, entry->name);
+							if (auto entry = globalWorkQueue.single.pop()) {
+								doWork(1, entry->function, entry->param, entry->name, entry->queue);
 								return true;
 							}
 							return false;
@@ -120,18 +114,18 @@ void initWorkerThreads(u32 count) {
 				}
 				InterlockedIncrement(&deadWorkers);
 			}).detach();
-			pushWorkImpl = [](void (*fn)(void *), void *param, char const *name) {
-				workQueue.single.push({fn, param, name});
-				InterlockedIncrement(&workToDo);
+			pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) {
+				globalWorkQueue.single.push({queue, fn, param, name});
+				InterlockedIncrement(&queue->workToDo);
 			};
 		} else {
 			for (u32 i = 0; i < count; ++i) {
-				std::thread([i]() {
+				std::thread([i=i+1]() {
 					for (;;) {
 						spinlock(
 							[i] {
-								if (auto entry = workQueue.multi.pop()) {
-									doWork(i, entry->function, entry->param, entry->name);
+								if (auto entry = globalWorkQueue.multi.pop()) {
+									doWork(i, entry->function, entry->param, entry->name, entry->queue);
 									return true;
 								}
 								return false;
@@ -143,9 +137,9 @@ void initWorkerThreads(u32 count) {
 					InterlockedIncrement(&deadWorkers);
 				}).detach();
 			}
-			pushWorkImpl = [](void (*fn)(void *), void *param, char const *name) {
-				workQueue.multi.push({fn, param, name});
-				InterlockedIncrement(&workToDo);
+			pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) {
+				globalWorkQueue.multi.push({queue, fn, param, name});
+				InterlockedIncrement(&queue->workToDo);
 			};
 		}
 	}
@@ -154,8 +148,11 @@ void shutdownWorkerThreads() {
 	stopWork = true;
 	spinlock([] { return deadWorkers == workerCount; });
 }
-void pushWork_(char const *name, void (*fn)(void *), void *param) { return pushWorkImpl(fn, param, name); }
-void completeAllWork() { return waitForWorkCompletionImpl(); }
+void WorkQueue::push_(char const *name, void (*fn)(void *), void *param) { return pushWorkImpl(this, fn, param, name); }
+void WorkQueue::completeAllWork() { return waitForWorkCompletionImpl(this); }
+bool WorkQueue::completed() {
+	return workToDo == 0;
+}
 
 struct CPUID {
 	s32 eax;
@@ -568,50 +565,54 @@ void shutdown() {
 #else
 namespace Profiler {
 #define MAX_PROFILER_ENTRY_COUNT 1024
-Stats stats;
-List<Entry> activeEntries;
+static Stats stats;
+static List<Entry> activeEntries;
+static std::mutex mutex;
+auto mainThreadId = std::this_thread::get_id();
 
 ENG_API void createEntry(char const *name) {
 	Entry result;
 	result.name = name;
-	result.totalMicroseconds = (u64)PerfTimer::getCounter();
+	result.selfCycles = 
+	result.startCycle =
 	result.totalCycles = __rdtsc();
-	result.selfMicroseconds = result.totalMicroseconds;
-	result.selfCycles = result.totalCycles;
+
+	std::scoped_lock _l(mutex);
 	activeEntries.push_back(result);
 }
 void addEntry() {
+	std::scoped_lock _l(mutex);
+
 	auto e = activeEntries.back();
 	activeEntries.pop_back();
-	auto nowNs = (u64)PerfTimer::getCounter();
-	e.selfMicroseconds = nowNs - e.selfMicroseconds;
-	e.totalMicroseconds = nowNs - e.totalMicroseconds;
 	auto nowCy = __rdtsc();
 	e.selfCycles = nowCy - e.selfCycles;
 	e.totalCycles = nowCy - e.totalCycles;
 	for (auto &o : activeEntries) {
 		o.selfCycles += e.selfCycles;
-		o.selfMicroseconds += e.selfMicroseconds;
 	}
 	if (auto it = std::find_if(stats.entries.begin(), stats.entries.end(),
 							   [&](Entry n) { return strcmp(n.name, e.name) == 0; });
 		it != stats.entries.end()) {
 
 		it->selfCycles += e.selfCycles;
-		it->selfMicroseconds += e.selfMicroseconds;
 		it->totalCycles += e.totalCycles;
-		it->totalMicroseconds += e.totalMicroseconds;
 	} else {
 		stats.entries.push_back(e);
 	}
+
+	if (std::this_thread::get_id() == mainThreadId) {
+		WorkStat stat;
+		stat.workName = e.name;
+		stat.startCycle = e.startCycle;
+		stat.endCycle = e.startCycle + e.totalCycles;
+		threadStats[0].push_back(stat);
+	}
+}
+void prepareStats() {
+	stats.totalCycles = __rdtsc() - stats.totalCycles;
 }
 Stats &getStats() {
-	for (auto &stat : stats.entries) {
-		stat.selfMicroseconds = PerfTimer::getMicroseconds<u64>((s64)stat.selfMicroseconds);
-		stat.totalMicroseconds = PerfTimer::getMicroseconds<u64>((s64)stat.totalMicroseconds);
-	}
-	stats.totalMicroseconds = PerfTimer::getMicroseconds<u64>((s64)stats.totalMicroseconds, PerfTimer::getCounter());
-	stats.totalCycles = __rdtsc() - stats.totalCycles;
 	return stats;
 }
 void reset() {
@@ -619,8 +620,8 @@ void reset() {
 	stats.entries.reserve(256);
 	activeEntries.clear();
 	activeEntries.reserve(512);
+	stats.frameStartCycle = 
 	stats.totalCycles = __rdtsc();
-	stats.totalMicroseconds = (u64)PerfTimer::getCounter();
 }
 } // namespace Profiler
 namespace Log {

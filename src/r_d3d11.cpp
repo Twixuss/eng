@@ -1,8 +1,8 @@
 #include "allocator.h"
 #include "common.h"
 #include "renderer.h"
-#include "window.h"
 #include "win32_common.h"
+#include "window.h"
 
 #define D3D11_NO_HELPERS
 
@@ -12,7 +12,7 @@
 #include <d3dcompiler.h>
 
 #ifndef D3D_COMPILE_STANDARD_FILE_INCLUDE
-#define D3D_COMPILE_STANDARD_FILE_INCLUDE ((ID3DInclude*)(UINT_PTR)1)
+#define D3D_COMPILE_STANDARD_FILE_INCLUDE ((ID3DInclude *)(UINT_PTR)1)
 #endif
 
 #include <vector>
@@ -20,36 +20,32 @@
 
 namespace D3D11 {
 
-static IDXGISwapChain* swapChain;
-static ID3D11Device* device;
-static ID3D11DeviceContext* immediateContext;
+static IDXGISwapChain *swapChain;
+static ID3D11Device *device;
+static ID3D11DeviceContext *immediateContext;
 
 struct VS {
-	using Type = ID3D11VertexShader*;
+	using Type = ID3D11VertexShader *;
 	static constexpr auto name = "vs";
 	static constexpr auto target = "vs_5_0";
 	static constexpr auto create = &ID3D11Device::CreateVertexShader;
 };
 
 struct PS {
-	using Type = ID3D11PixelShader*;
+	using Type = ID3D11PixelShader *;
 	static constexpr auto name = "ps";
 	static constexpr auto target = "ps_5_0";
 	static constexpr auto create = &ID3D11Device::CreatePixelShader;
 };
 
-template <class T>
-concept CShader = std::is_same_v<T, VS> || std::is_same_v<T, PS>;
-
-template <CShader Shader>
-static typename Shader::Type createShader(StringView src, char const* name, D3D_SHADER_MACRO const* defines) {
-	PROFILE_FUNCTION;
-	ID3DBlob* code{};
-	ID3DBlob* messages{};
+template <class Shader>
+static typename Shader::Type _createShader(StringView src, char const *name, D3D_SHADER_MACRO const *defines) {
+	ID3DBlob *code{};
+	ID3DBlob *messages{};
 	HRESULT compileResult = D3DCompile(src.data(), src.size(), name, defines, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main",
 									   Shader::target, 0, 0, &code, &messages);
 	if (messages) {
-		Log::warn((char const*)messages->GetBufferPointer());
+		Log::warn((char const *)messages->GetBufferPointer());
 		messages->Release();
 	}
 	DHR(compileResult);
@@ -59,8 +55,18 @@ static typename Shader::Type createShader(StringView src, char const* name, D3D_
 	code->Release();
 	return shader;
 }
-ID3D11Buffer* createBuffer(UINT bindFlags, D3D11_USAGE usage, UINT cpuAccess, UINT size, UINT stride, UINT misc,
-						   void const* initialData) {
+
+#define CREATE_SHADER(createVertexShader, VS)                                                                       \
+	static FORCEINLINE auto createVertexShader(StringView src, char const *name, D3D_SHADER_MACRO const *defines) { \
+		PROFILE_FUNCTION;                                                                                           \
+		return _createShader<VS>(src, name, defines);                                                               \
+	}
+CREATE_SHADER(createVertexShader, VS)
+CREATE_SHADER(createPixelShader, PS)
+#undef CREATE_SHADER
+
+ID3D11Buffer *createBuffer(UINT bindFlags, D3D11_USAGE usage, UINT cpuAccess, UINT size, UINT stride, UINT misc,
+						   void const *initialData) {
 	PROFILE_FUNCTION;
 	D3D11_BUFFER_DESC desc{};
 	desc.BindFlags = bindFlags;
@@ -69,7 +75,7 @@ ID3D11Buffer* createBuffer(UINT bindFlags, D3D11_USAGE usage, UINT cpuAccess, UI
 	desc.ByteWidth = size;
 	desc.StructureByteStride = stride;
 	desc.MiscFlags = misc;
-	ID3D11Buffer* result;
+	ID3D11Buffer *result;
 	if (initialData) {
 		D3D11_SUBRESOURCE_DATA d3dInitialData;
 		d3dInitialData.pSysMem = initialData;
@@ -79,7 +85,7 @@ ID3D11Buffer* createBuffer(UINT bindFlags, D3D11_USAGE usage, UINT cpuAccess, UI
 	}
 	return result;
 }
-ID3D11BlendState* createBlend(D3D11_BLEND_OP op, D3D11_BLEND src, D3D11_BLEND dst) {
+ID3D11BlendState *createBlend(D3D11_BLEND_OP op, D3D11_BLEND src, D3D11_BLEND dst) {
 	D3D11_BLEND_DESC desc{};
 	desc.RenderTarget[0].BlendEnable = true;
 	desc.RenderTarget[0].BlendOp = op;
@@ -89,7 +95,7 @@ ID3D11BlendState* createBlend(D3D11_BLEND_OP op, D3D11_BLEND src, D3D11_BLEND ds
 	desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
 	desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
 	desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-	ID3D11BlendState* result;
+	ID3D11BlendState *result;
 	DHR(device->CreateBlendState(&desc, &result));
 	return result;
 }
@@ -198,65 +204,93 @@ u32 getSize(DXGI_FORMAT format) {
 	} while (0)
 
 struct RenderTarget {
-	ID3D11RenderTargetView* rtv;
-	ID3D11ShaderResourceView* srv;
-	ID3D11Texture2D* texture;
+	ID3D11RenderTargetView *rtv;
+	ID3D11ShaderResourceView *srv;
+	ID3D11Texture2D *texture;
 };
 struct StructuredBuffer {
-	ID3D11Buffer* buffer;
-	ID3D11ShaderResourceView* srv;
+	ID3D11Buffer *buffer;
+	ID3D11ShaderResourceView *srv;
 	u32 currentSize;
 };
 struct Shader {
-	ID3D11VertexShader* vs;
-	ID3D11PixelShader* ps;
+	ID3D11VertexShader *vs;
+	ID3D11PixelShader *ps;
 };
 struct Texture {
-	ID3D11Texture2D* texture;
-	ID3D11ShaderResourceView* srv;
+	ID3D11Texture2D *texture;
+	ID3D11ShaderResourceView *srv;
 	u32 samplerIndex;
 	u32 rowPitch;
 };
 
-static ID3D11BlendState* blends[(u32)Blend::count][(u32)Blend::count][(u32)BlendOp::count]{};
-static ID3D11SamplerState* samplers[(u32)Address::count][(u32)Filter::count]{};
+static ID3D11BlendState *blends[(u32)Blend::count][(u32)Blend::count][(u32)BlendOp::count]{};
+static ID3D11SamplerState *samplers[(u32)Address::count][(u32)Filter::count]{};
 
 #define MAX_BUFFERS		   1024
 #define MAX_TEXTURES	   1024
 #define MAX_SHADERS		   1024
 #define MAX_RENDER_TARGETS 1024
 
-static StructuredBuffer buffers[MAX_BUFFERS]{};
-static Texture textures[MAX_TEXTURES]{};
-static Shader shaders[MAX_SHADERS]{};
-static RenderTarget renderTargets[MAX_RENDER_TARGETS]{};
+template <class T, umm storageSize>
+struct Storage {
+	Storage() { 
+		memset(usageMask, ~0, sizeof(usageMask)); 
+	}
+	T *getNull() {
+		mutex.lock();
+		u32 maskIndex = 0;
+		while (usageMask[maskIndex] == 0) {
+			++maskIndex;
+		}
+		if (maskIndex == storageSize) {
+			INVALID_CODE_PATH("out of '%s' storage", typeid(T).name());
+		}
+		u32 bitIndex = findLowestBit(usageMask[maskIndex]);
+		usageMask[maskIndex] &= ~(1 << bitIndex);
+		mutex.unlock();
+
+		return values + maskIndex * bitsInMask + bitIndex;
+	}
+	u32 indexOf(T const *addr) { 
+		ASSERT(values <= addr && addr < values + storageSize);
+		return (u32)(addr - values); 
+	}
+
+	T &operator[](umm i) { return values[i]; }
+	T const &operator[](umm i) const { return values[i]; }
+
+	static constexpr u32 bitsInMask = sizeof(umm) * 8;
+
+	std::mutex mutex;
+	T values[storageSize]{};
+	umm usageMask[ceil(storageSize, bitsInMask) / bitsInMask]{};
+};
+
+static Storage<StructuredBuffer, MAX_BUFFERS> buffers;
+static Storage<Texture, MAX_TEXTURES> textures;
+static Storage<Shader, MAX_SHADERS> shaders;
+static Storage<RenderTarget, MAX_RENDER_TARGETS> renderTargets;
 
 #define MAX_MATRIX_COUNT 8
 struct MatrixCBufferData {
 	m4 matrices[MAX_MATRIX_COUNT];
 };
 MatrixCBufferData matrixCBufferData{};
-ID3D11Buffer* matrixCBuffer;
-
-#include "renderer_exporter.inl"
-
-#define ADD_ARG(...)						 (Renderer * this, __VA_ARGS__)
-#define R_DECORATE(type, name, args, params) EXPORT type name ADD_ARG args
-
-#define this renderer
+ID3D11Buffer *matrixCBuffer;
 
 #define CHECK_ID(val) ASSERT((val).valid(), "invalid id")
 
 struct alignas(16) ScreenInfoCBD {
-	v2 screenSize;
-	v2 invScreenSize;
+	v2f screenSize;
+	v2f invScreenSize;
 	f32 aspectRatio;
 #pragma warning(suppress : 4324)
 };
 ScreenInfoCBD screenInfoCBD;
-ID3D11Buffer* screenInfoCB;
+ID3D11Buffer *screenInfoCB;
 
-void create(RenderTarget& rt, v2u size, Format format, u32 sampleCount) {
+void create(RenderTarget &rt, v2u size, Format format, u32 sampleCount) {
 	auto dxgiFormat = cvtFormat(format);
 	{
 		D3D11_TEXTURE2D_DESC desc{};
@@ -276,20 +310,20 @@ void create(RenderTarget& rt, v2u size, Format format, u32 sampleCount) {
 	DHR(device->CreateRenderTargetView(rt.texture, &desc, &rt.rtv));
 	DHR(device->CreateShaderResourceView(rt.texture, 0, &rt.srv));
 }
-void release(RenderTarget& rt) {
+void release(RenderTarget &rt) {
 	RELEASE(rt.rtv);
 	RELEASE(rt.srv);
 	RELEASE(rt.texture);
 }
-void bind(RenderTarget& rt) { immediateContext->OMSetRenderTargets(1, &rt.rtv, 0); }
-void bind(RenderTarget& rt, Stage stage, u32 slot) {
+void bind(RenderTarget &rt) { immediateContext->OMSetRenderTargets(1, &rt.rtv, 0); }
+void bind(RenderTarget &rt, Stage stage, u32 slot) {
 	switch (stage) {
 		case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &rt.srv); break;
 		case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &rt.srv); break;
 		default: INVALID_CODE_PATH("bad shader stage");
 	}
 }
-void create(StructuredBuffer& buf, void const* data, u32 stride, u32 count) {
+void create(StructuredBuffer &buf, void const *data, u32 stride, u32 count) {
 	ASSERT(!buf.buffer, "StructuredBuffer not released");
 	buf.buffer = createBuffer(D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, stride * count,
 							  stride, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, data);
@@ -300,35 +334,35 @@ void create(StructuredBuffer& buf, void const* data, u32 stride, u32 count) {
 	DHR(device->CreateShaderResourceView(buf.buffer, &desc, &buf.srv));
 	buf.currentSize = count * stride;
 }
-void release(StructuredBuffer& buf) {
+void release(StructuredBuffer &buf) {
 	RELEASE(buf.buffer);
 	RELEASE(buf.srv);
 	buf.currentSize = 0;
 }
-bool valid(StructuredBuffer& buf) { return buf.buffer != 0; }
-void update(StructuredBuffer& buf, void const* data, u32 size) {
+bool valid(StructuredBuffer &buf) { return buf.buffer != 0; }
+void update(StructuredBuffer &buf, void const *data, u32 size) {
 	ASSERT(size <= buf.currentSize, "buffer overflow");
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	DHR(immediateContext->Map(buf.buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
 	memcpy(mapped.pData, data, size);
 	immediateContext->Unmap(buf.buffer, 0);
 }
-void bind(StructuredBuffer& buf, Stage stage, u32 slot) {
+void bind(StructuredBuffer &buf, Stage stage, u32 slot) {
 	switch (stage) {
 		case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &buf.srv); break;
 		case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &buf.srv); break;
 		default: INVALID_CODE_PATH("Bad shader stage"); break;
 	}
 }
-void bind(Shader& sh) {
+void bind(Shader &sh) {
 	immediateContext->VSSetShader(sh.vs, 0, 0);
 	immediateContext->PSSetShader(sh.ps, 0, 0);
 }
-void release(Shader& sh) {
+void release(Shader &sh) {
 	RELEASE(sh.vs);
 	RELEASE(sh.ps);
 }
-void bind(Texture& tex, Stage stage, u32 slot) {
+void bind(Texture &tex, Stage stage, u32 slot) {
 	auto sampler = &samplers[0][0] + tex.samplerIndex;
 	ASSERT(sampler < &samplers[(u32)Address::count][(u32)Filter::count], "invalid sampler");
 	switch (stage) {
@@ -356,6 +390,13 @@ void setupGlobals() {
 	immediateContext->VSSetConstantBuffers(1, 1, &matrixCBuffer);
 	immediateContext->PSSetConstantBuffers(1, 1, &matrixCBuffer);
 }
+
+#define ADD_ARG(...)						 (Renderer * this, __VA_ARGS__)
+#define EXPORT								 extern "C" __declspec(dllexport)
+#define R_DECORATE(type, name, args, params) EXPORT type RNAME(name) ADD_ARG args
+
+#define this renderer
+
 R_INIT {
 	PROFILE_FUNCTION;
 
@@ -377,13 +418,14 @@ R_INIT {
 	DHR(D3D11CreateDeviceAndSwapChain(0, D3D_DRIVER_TYPE_HARDWARE, 0, flags, 0, 0, D3D11_SDK_VERSION, &swapChainDesc,
 									  &swapChain, &device, 0, &immediateContext));
 	setupGlobals();
+
+	renderTargets.getNull(); // reserve space for back buffer
 }
 R_CREATE_RT {
-	auto rt = std::find_if(std::begin(renderTargets), std::end(renderTargets),
-						   [](RenderTarget& rt) { return rt.texture == 0; });
-	ASSERT(rt != std::end(renderTargets), "out of render targets");
+	auto rt = renderTargets.getNull();
 	create(*rt, size, format, sampleCount);
-	return {(u32)(rt - std::begin(renderTargets))};
+	//printf("renderTarget %u\n", renderTargets.indexOf(rt));
+	return {renderTargets.indexOf(rt)};
 }
 R_BIND_RT {
 	CHECK_ID(rt);
@@ -396,7 +438,7 @@ R_BIND_RT_AS_TEXTURE {
 R_SHUTDOWN {}
 R_RESIZE {
 	PROFILE_FUNCTION;
-	auto& backBuffer = renderTargets[0];
+	auto &backBuffer = renderTargets[0];
 	release(backBuffer);
 	DHR(swapChain->ResizeBuffers(1, clientSize.x, clientSize.y, DXGI_FORMAT_UNKNOWN, 0));
 	DHR(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer.texture)));
@@ -407,7 +449,7 @@ R_RESIZE {
 	viewport.MaxDepth = 1.f;
 	immediateContext->RSSetViewports(1, &viewport);
 
-	screenInfoCBD.screenSize = (v2)this->window->clientSize;
+	screenInfoCBD.screenSize = (v2f)this->window->clientSize;
 	screenInfoCBD.invScreenSize = 1.0f / screenInfoCBD.screenSize;
 	screenInfoCBD.aspectRatio = screenInfoCBD.screenSize.y / screenInfoCBD.screenSize.x;
 	D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -416,10 +458,10 @@ R_RESIZE {
 	immediateContext->Unmap(screenInfoCB, 0);
 }
 R_CREATE_BUFFER {
-	auto vb = std::find_if(std::begin(buffers), std::end(buffers), [](StructuredBuffer& b) { return b.buffer == 0; });
-	ASSERT(vb != std::end(buffers), "out of buffers");
+	auto vb = buffers.getNull();
 	create(*vb, data, stride, count);
-	return {(u32)(vb - std::begin(buffers))};
+	//printf("buffer %u\n", buffers.indexOf(vb));
+	return {buffers.indexOf(vb)};
 }
 R_UPDATE_BUFFER {
 	CHECK_ID(buffer);
@@ -429,7 +471,7 @@ R_BIND_BUFFER {
 	CHECK_ID(buffer);
 	bind(buffers[buffer.id], stage, slot);
 }
-ID3D11SamplerState** initSampler(Address address, Filter filter, v4 borderColor) {
+ID3D11SamplerState **initSampler(Address address, Filter filter, v4f borderColor) {
 	auto sampler = &samplers[(u32)address][(u32)filter];
 	if (*sampler == 0) {
 		D3D11_SAMPLER_DESC desc{};
@@ -443,22 +485,23 @@ ID3D11SamplerState** initSampler(Address address, Filter filter, v4 borderColor)
 	return sampler;
 }
 R_CREATE_TEXTURE_FROM_FILE {
-	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
-	ASSERT(tex != std::end(textures), "out of textures");
+	PROFILE_FUNCTION;
+
+	auto tex = textures.getNull();
 	DHR(D3DX11CreateShaderResourceViewFromFileA(device, path, 0, 0, &tex->srv, 0));
 	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 
-	tex->srv->GetResource((ID3D11Resource**)&tex->texture);
+	tex->srv->GetResource((ID3D11Resource **)&tex->texture);
 
 	D3D11_TEXTURE2D_DESC desc;
 	tex->texture->GetDesc(&desc);
 	tex->rowPitch = getSize(desc.Format) * desc.Width;
 
-	return {(u32)(tex - std::begin(textures))};
+	//printf("texture %u\n", textures.indexOf(tex));
+	return {textures.indexOf(tex)};
 }
 R_CREATE_TEXTURE {
-	auto tex = std::find_if(std::begin(textures), std::end(textures), [](Texture& t) { return t.srv == 0; });
-	ASSERT(tex != std::end(textures), "out of textures");
+	auto tex = textures.getNull();
 	auto dxgiFormat = cvtFormat(format);
 	{
 		D3D11_TEXTURE2D_DESC desc{};
@@ -481,7 +524,9 @@ R_CREATE_TEXTURE {
 	}
 	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 	tex->rowPitch = getSize(dxgiFormat) * width;
-	return {(u32)(tex - std::begin(textures))};
+
+	//printf("texture %u\n", textures.indexOf(tex));
+	return {textures.indexOf(tex)};
 }
 R_BIND_TEXTURE {
 	CHECK_ID(texture);
@@ -489,8 +534,7 @@ R_BIND_TEXTURE {
 }
 R_CREATE_SHADER {
 	PROFILE_FUNCTION;
-	auto shader = std::find_if(std::begin(shaders), std::end(shaders), [](Shader& s) { return s.vs == 0; });
-	ASSERT(shader != std::end(shaders), "out of shaders");
+	auto shader = shaders.getNull();
 
 	char buffer[256];
 	sprintf(buffer, "%s.hlsl", path);
@@ -503,7 +547,7 @@ R_CREATE_SHADER {
 
 	if (prefix.size()) {
 		u32 totalSize = (u32)(shaderFile.size() + prefix.size());
-		shaderSource = {(char*)malloc(totalSize), totalSize};
+		shaderSource = {(char *)malloc(totalSize), totalSize};
 		memcpy(shaderSource.begin(), prefix.begin(), prefix.size());
 		memcpy(shaderSource.begin() + prefix.size(), shaderFile.begin(), shaderFile.size());
 	} else {
@@ -514,18 +558,20 @@ R_CREATE_SHADER {
 	D3D_SHADER_MACRO defines[definesCount + 1]{};
 
 	defines[0].Name = "COMPILE_VS";
-	shader->vs = createShader<VS>(shaderSource, path, defines);
+	shader->vs = createVertexShader(shaderSource, path, defines);
 	ASSERT(shader->vs);
 
 	defines[0].Name = "COMPILE_PS";
-	shader->ps = createShader<PS>(shaderSource, path, defines);
+	shader->ps = createPixelShader(shaderSource, path, defines);
 	ASSERT(shader->ps);
 
 	if (prefix.size()) {
 		free(shaderSource.begin());
 	}
 	freeEntireFile(shaderFile);
-	return {(u32)(shader - std::begin(shaders))};
+
+	//printf("shader %u\n", shaders.indexOf(shader));
+	return {shaders.indexOf(shader)};
 }
 R_RELEASE_SHADER {
 	CHECK_ID(shader);
@@ -541,7 +587,7 @@ R_PRESENT {
 	this->drawCalls = 0;
 }
 R_UPDATE_TEXTURE {
-	auto& t = textures[tex.id];
+	auto &t = textures[tex.id];
 	immediateContext->UpdateSubresource(t.texture, 0, 0, data, t.rowPitch, 0);
 }
 R_BIND_SHADER {
@@ -560,13 +606,13 @@ R_SET_MATRIX {
 	immediateContext->Unmap(matrixCBuffer, 0);
 }
 R_SET_BLEND {
-	auto& blend = blends[(u32)src][(u32)dst][(u32)op];
+	auto &blend = blends[(u32)src][(u32)dst][(u32)op];
 	if (!blend) {
 		blend = createBlend(cvtBlendOp(op), cvtBlend(src), cvtBlend(dst));
 	}
-	immediateContext->OMSetBlendState(blend, v4{}.data(), ~0u);
+	immediateContext->OMSetBlendState(blend, v4f{}.data(), ~0u);
 }
-R_DISABLE_BLEND { immediateContext->OMSetBlendState(0, v4{}.data(), ~0u); }
+R_DISABLE_BLEND { immediateContext->OMSetBlendState(0, v4f{}.data(), ~0u); }
 R_CLEAR_TARGET {
 	CHECK_ID(rt);
 	immediateContext->ClearRenderTargetView(renderTargets[rt.id].rtv, color.data());
@@ -597,8 +643,8 @@ ID3D11DepthStencilView* createDepthTarget(v2u size) {
 }
 */
 
-EXPORT ID3D11Device* d3d11_getDevice() { return device; }
-EXPORT ID3D11DeviceContext* d3d11_getImmediateContext() { return immediateContext; }
-EXPORT IDXGISwapChain* d3d11_getSwapChain() { return swapChain; }
+EXPORT ID3D11Device *d3d11_getDevice() { return device; }
+EXPORT ID3D11DeviceContext *d3d11_getImmediateContext() { return immediateContext; }
+EXPORT IDXGISwapChain *d3d11_getSwapChain() { return swapChain; }
 
 } // namespace D3D11

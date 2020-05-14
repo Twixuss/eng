@@ -49,29 +49,19 @@ void error(char const *format, T const &... args);
 	DEBUG_BREAK();                                \
 	throw std::runtime_error(string)
 
-#define ASSERTION_FAILURE(causeString, expression, ...)                                                         \
-	PRINT_AND_THROW(causeString "\nFile: " __FILE__ "\nLine: " STRINGIZE(__LINE__) "\nFunction: " __FUNCTION__ "\nExpression: " expression, \
+#define ASSERTION_FAILURE(causeString, expression, ...)                                                     \
+	PRINT_AND_THROW(causeString                                                                             \
+					"\nFile: " __FILE__                                                                     \
+					"\nLine: " STRINGIZE(__LINE__) "\nFunction: " __FUNCTION__ "\nExpression: " expression, \
 					__VA_ARGS__)
 #include "../dep/tl/include/tl/common.h"
 #include "../dep/tl/include/tl/math.h"
 using namespace TL;
-using v2 = v2f;
-using v3 = v3f;
-using v4 = v4f;
-using v2x = v2fx<>;
-using v3x = v3fx<>;
-using v4x = v4fx<>;
-using v2x4 = v2fx4;
-using v3x4 = v3fx4;
-using v4x4 = v4fx4;
-using v2x8 = v2fx8;
-using v3x8 = v3fx8;
-using v4x8 = v4fx8;
 
 #if COMPILER_MSVC
 #pragma warning(push, 0)
-#pragma warning(disable : 4710)
-#pragma warning(disable : 4711)
+#pragma warning(disable : 4710) // function inlined
+#pragma warning(disable : 4711) // function not inlined
 #else
 #endif
 
@@ -88,17 +78,13 @@ using v4x8 = v4fx8;
 #else
 #endif
 
-struct ThreadStat {
+struct WorkStat {
 	char const *workName;
-	u64 cycles;
+	u64 startCycle;
+	u64 endCycle;
+	u64 cycles() const { return endCycle - startCycle; }
 };
-
-ENG_API void initWorkerThreads(u32 count);
-ENG_API void shutdownWorkerThreads();
-ENG_API void pushWork_(char const *name, void (*fn)(void *), void *param);
-ENG_API void completeAllWork();
-ENG_API List<List<ThreadStat>> &getThreadStats();
-ENG_API void resetThreadStats();
+using ThreadStats = List<List<WorkStat>>;
 
 namespace Detail {
 template <class Tuple, size_t... indices>
@@ -115,75 +101,92 @@ static constexpr auto getInvoke(std::index_sequence<indices...>) noexcept {
 }
 } // namespace Detail
 
-template <class Fn, class... Args>
-void pushWork(char const *name, Fn &&fn, Args &&...args) {
-	using Tuple = std::tuple<std::decay_t<Fn>, std::decay_t<Args>...>;
-	auto fnParams = new Tuple(std::forward<Fn>(fn), std::forward<Args>(args)...);
-	constexpr auto invokerProc = Detail::getInvoke<Tuple>(std::make_index_sequence<1 + sizeof...(Args)>{});
+struct ENG_API WorkQueue {
+	u32 volatile workToDo = 0;
 
-	pushWork_(name, invokerProc, fnParams);
-}
+	template <class Fn, class... Args>
+	void push(char const *name, Fn &&fn, Args &&... args) {
+		using Tuple = std::tuple<std::decay_t<Fn>, std::decay_t<Args>...>;
+		auto fnParams = new Tuple(std::forward<Fn>(fn), std::forward<Args>(args)...);
+		constexpr auto invokerProc = Detail::getInvoke<Tuple>(std::make_index_sequence<1 + sizeof...(Args)>{});
 
-enum class ProcessorFeature { 
-    _3DNOW,       
-    _3DNOWEXT,    
-    ABM,         
-    ADX,         
-    AES,         
-    AVX,         
-    AVX2,        
-    AVX512CD,    
-    AVX512ER,    
-    AVX512F,     
-    AVX512PF,    
-    BMI1,        
-    BMI2,        
-    CLFSH,       
+		push_(name, invokerProc, fnParams);
+	}
+	void push_(char const *name, void (*fn)(void *), void *param);
+	void completeAllWork();
+	bool completed();
+};
+
+struct WorkEntry {
+	WorkQueue *queue;
+	void (*function)(void *param);
+	void *param;
+	char const *name;
+};
+
+ENG_API void initWorkerThreads(u32 count);
+ENG_API void shutdownWorkerThreads();
+ENG_API ThreadStats &getThreadStats();
+ENG_API void resetThreadStats();
+
+enum class ProcessorFeature {
+	_3DNOW,
+	_3DNOWEXT,
+	ABM,
+	ADX,
+	AES,
+	AVX,
+	AVX2,
+	AVX512CD,
+	AVX512ER,
+	AVX512F,
+	AVX512PF,
+	BMI1,
+	BMI2,
+	CLFSH,
 	CMOV,
-    CMPXCHG16B,  
-    CX8,         
-    ERMS,        
-    F16C,        
-    FMA,         
-    FSGSBASE,    
-    FXSR,        
-    HLE,         
-    INVPCID,     
-    LAHF,        
-    LZCNT,       
-    MMX,         
-    MMXEXT,      
-    MONITOR,     
-    MOVBE,       
-    MSR,         
-    OSXSAVE,     
-    PCLMULQDQ,   
-    POPCNT,      
-    PREFETCHWT1, 
-    RDRAND,      
-    RDSEED,      
-    RDTSCP,      
-    RTM,         
-    SEP,         
-    SHA,         
-    SSE,         
-    SSE2,        
-    SSE3,        
-    SSE41,      
-    SSE42,      
-    SSE4a,       
-    SSSE3,       
-    SYSCALL,     
-    TBM,         
-    XOP,         
-    XSAVE,       
+	CMPXCHG16B,
+	CX8,
+	ERMS,
+	F16C,
+	FMA,
+	FSGSBASE,
+	FXSR,
+	HLE,
+	INVPCID,
+	LAHF,
+	LZCNT,
+	MMX,
+	MMXEXT,
+	MONITOR,
+	MOVBE,
+	MSR,
+	OSXSAVE,
+	PCLMULQDQ,
+	POPCNT,
+	PREFETCHWT1,
+	RDRAND,
+	RDSEED,
+	RDTSCP,
+	RTM,
+	SEP,
+	SHA,
+	SSE,
+	SSE2,
+	SSE3,
+	SSE41,
+	SSE42,
+	SSE4a,
+	SSSE3,
+	SYSCALL,
+	TBM,
+	XOP,
+	XSAVE,
 };
 
 ENG_API char const *toString(ProcessorFeature);
 
-enum class CpuVendor {
-	Unknown, Intel, AMD
-};
+enum class CpuVendor { Unknown, Intel, AMD };
 ENG_API char const *toString(CpuVendor);
 
 struct CpuInfo {
@@ -199,7 +202,7 @@ struct CpuInfo {
 		u32 index, slot = getFeaturePos(feature, index);
 		return (b32)(features[slot] & (1 << index));
 	}
-	inline u32 getFeaturePos(ProcessorFeature f, u32& index) const {
+	inline u32 getFeaturePos(ProcessorFeature f, u32 &index) const {
 		index = (u32)f & 0x1F;
 		return (u32)f >> 5;
 	}
@@ -283,10 +286,9 @@ ENG_API void freeEntireFile(StringSpan file);
 
 namespace Profiler {
 struct Entry {
+	u64 startCycle;
 	u64 totalCycles;
-	u64 totalMicroseconds;
 	u64 selfCycles;
-	u64 selfMicroseconds;
 	char const *name;
 };
 ENG_API void createEntry(char const *name);
@@ -295,10 +297,13 @@ ENG_API void reset();
 
 struct Stats {
 	List<Entry> entries;
+	u64 frameStartCycle;
 	u64 totalCycles;
 	u64 totalMicroseconds;
 };
+ENG_API void prepareStats();
 ENG_API Stats &getStats();
+
 }; // namespace Profiler
 
 #if ENABLE_PROFILER

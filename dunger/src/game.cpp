@@ -3,6 +3,8 @@
 #include <queue>
 #include <random>
 
+#pragma warning(disable : 4623) // implicitly deleted constructor
+
 #if 0
 template <class T>
 void erase(List<T> &vec, T *val) {
@@ -77,20 +79,20 @@ TileStorage genTiles() {
 	return tiles;
 }
 
-v2 makeValidPosition(v2 p) {
+v2f makeValidPosition(v2f p) {
 	if (isnan(p.x))
 		p.x = 0;
 	if (isnan(p.y))
 		p.y = 0;
-	return clamp(p, v2{}, V2f(CHUNK_WIDTH - 1));
+	return clamp(p, v2f{}, V2f(CHUNK_WIDTH - 1));
 }
-v2 movePlayer(TileStorage const &tiles, Time const &time, v2 from, v2 velocity, f32 r) {
+v2f movePlayer(TileStorage const &tiles, Time const &time, v2f from, v2f velocity, f32 r) {
 	for (s32 i = 0; i < 4; ++i) {
 		if (lengthSqr(velocity) == 0) {
 			break;
 		}
-		v2 a = from;
-		v2 b = a + velocity * time.delta;
+		v2f a = from;
+		v2f b = a + velocity * time.delta;
 		bool hit = false;
 		v2s tMin = max(roundToInt(min(a, b) - (r + 0.5f)), V2s(0));
 		v2s tMax = min(roundToInt(max(a, b) + (r + 0.5f)) + 1, V2s(CHUNK_WIDTH));
@@ -98,12 +100,12 @@ v2 movePlayer(TileStorage const &tiles, Time const &time, v2 from, v2 velocity, 
 			for (s32 ty = tMin.y; ty < tMax.y; ++ty) {
 				if (!getTile(tiles, (u32)tx, (u32)ty))
 					continue;
-				v2 tilef = (v2f)v2s{tx, ty};
+				v2f tilef = (v2f)v2s{tx, ty};
 
-				v2 tileMin = tilef - 0.5f;
-				v2 tileMax = tilef + 0.5f;
+				v2f tileMin = tilef - 0.5f;
+				v2f tileMax = tilef + 0.5f;
 
-				v2 normal{};
+				v2f normal{};
 				if (tileMin.x < b.x && b.x < tileMax.x) {
 					if (tilef.y < b.y && b.y < tilef.y + 0.5f + r) {
 						from.y = tilef.y + 0.5f + r;
@@ -121,7 +123,7 @@ v2 movePlayer(TileStorage const &tiles, Time const &time, v2 from, v2 velocity, 
 						normal = {-1, 0};
 					}
 				} else {
-					auto doCorner = [&](v2 corner) {
+					auto doCorner = [&](v2f corner) {
 						if (lengthSqr(b - corner) < r * r) {
 							normal = normalize(b - corner);
 							from = corner + normal * r;
@@ -132,11 +134,11 @@ v2 movePlayer(TileStorage const &tiles, Time const &time, v2 from, v2 velocity, 
 					else if (b.x < tileMin.x && b.y < tileMin.y)
 						doCorner(tileMin);
 					else if (b.x < tileMin.x && b.y > tileMax.y)
-						doCorner(v2{tileMin.x, tileMax.y});
+						doCorner({tileMin.x, tileMax.y});
 					else if (b.x > tileMax.x && b.y < tileMin.y)
-						doCorner(v2{tileMax.x, tileMin.y});
+						doCorner({tileMax.x, tileMin.y});
 				}
-				hit = normal != v2{};
+				hit = normal != v2f{};
 				velocity -= normal * dot(velocity, normal);
 				if (hit)
 					break;
@@ -154,39 +156,39 @@ v2 movePlayer(TileStorage const &tiles, Time const &time, v2 from, v2 velocity, 
 #define ATLAS_SIZE		 V2f(8)
 #define ATLAS_ENTRY_SIZE (1.0f / ATLAS_SIZE)
 
-v2 offsetAtlasTile(v2f v) { return v * ATLAS_ENTRY_SIZE; }
-v2 offsetAtlasTile(f32 x, f32 y) { return offsetAtlasTile({x, y}); }
+v2f offsetAtlasTile(v2f v) { return v * ATLAS_ENTRY_SIZE; }
+v2f offsetAtlasTile(f32 x, f32 y) { return offsetAtlasTile({x, y}); }
 
 struct Bullet {
-	v2 position;
-	v2 velocity;
+	v2f position;
+	v2f velocity;
 	f32 remainingLifetime = 5.0f;
 	f32 rotation;
 	u32 ignoredLayers;
 };
 struct Explosion {
-	v2 position;
+	v2f position;
 	f32 remainingLifeTime;
 	f32 maxLifeTime;
 	f32 rotationOffset;
 };
 struct Ember {
-	v2 position;
-	v2 velocity;
+	v2f position;
+	v2f velocity;
 	f32 remainingLifeTime;
 	f32 maxLifeTime;
 	f32 rotationOffset;
 };
 struct Tile {
-	v4 color;
+	v4f color;
 
-	v2 position;
-	v2 size;
+	v2f position;
+	v2f size;
 
-	v2 uv0;
-	v2 uv1;
+	v2f uv0;
+	v2f uv1;
 
-	v2 uvScale;
+	v2f uvScale;
 	f32 uvMix;
 	f32 rotation;
 };
@@ -196,40 +198,55 @@ struct FrameUvs {
 	f32 uvMix;
 };
 struct Light {
-	v3 color;
+	v3f color;
 	f32 radius;
-	v2 position;
+	v2f position;
 };
 struct Bot {
-	v2 position;
-	v2 velocity;
+	v2f position;
+	v2f velocity;
 	f32 radius;
 	f32 fireTimer;
 };
 struct Random {
-	s32 seed;
-	s32 s32() { return seed = randomize(seed); }
-	u32 u32() { return (::u32)s32(); }
-	f32 f32() { return (u32() >> 8) * (1.0f / 0x1000000); }
+	u32 seed;
+	u32 u32() { return seed = randomize(seed); }
+	s32 s32() { return (::s32)u32(); }
 	bool u1() { return u32() & 0x10; }
-	s32x4 s32x4() { return {s32(), s32(), s32(), s32()}; }
-	s32x8 s32x8() { return {s32(), s32(), s32(), s32(), s32(), s32(), s32(), s32()}; }
-	u32x4 u32x4() { return (::u32x4)s32x4(); }
-	u32x8 u32x8() { return (::u32x8)s32x8(); }
+	u32x4 u32x4() { return randomize(u32() ^ ::u32x4{0x0CB94D77, 0xA3579AD0, 0x207B3643, 0x97C0013D}); }
+	u32x8 u32x8() {
+		return randomize(u32() ^ ::u32x8{0x1800E669, 0x0635093E, 0x0CB94D77, 0xA3579AD0, 0x207B3643, 0x97C0013D,
+										 0x3ACD6EE8, 0x85E0800F});
+	}
+	s32x4 s32x4() { return (::s32x4)u32x4(); }
+	s32x8 s32x8() { return (::s32x8)u32x8(); }
+	f32 f32() { return (u32() >> 8) * (1.0f / 0x1000000); }
 	f32x4 f32x4() { return (::f32x4)(u32x4() >> 8) * (1.0f / 0x1000000); }
 	f32x8 f32x8() { return (::f32x8)(u32x8() >> 8) * (1.0f / 0x1000000); }
-	v4 v4() { return V4f(f32x4()); }
-	v3 v3() { return V3f(f32(), f32(), f32()); }
+	v4f v4f() { return V4f(f32x4()); }
+	v3f v3f() { return V3f(f32(), f32(), f32()); }
+	template <class T>
+	T type() {
+		return {};
+	}
+	template <>
+	::s32x4 type<::s32x4>() {
+		return s32x4();
+	}
+	template <>
+	::s32x8 type<::s32x8>() {
+		return s32x8();
+	}
 };
 struct Label {
-	v2 p;
+	v2f p;
 	std::string text;
 	v4f color = V4f(1);
 };
 struct Rect {
 	v2s pos;
 	v2s size;
-	v4 color;
+	v4f color;
 };
 enum class RaycastResultType { noHit, tile, bot, player };
 struct RaycastResult {
@@ -237,10 +254,10 @@ struct RaycastResult {
 	u32 target;
 };
 enum RaycastLayer { player = 0x1, bot = 0x2 };
-RaycastResult raycastBullet(TileStorage const *tiles, View<Bot> bots, View<v2f> players, v2 a, v2 b, v2 &point,
-							v2 &normal) {
+RaycastResult raycast(TileStorage const *tiles, View<Bot> bots, View<v2f> players, v2f a, v2f b, v2f &point,
+					  v2f &normal) {
 	if (tiles) {
-		v2 tMin, tMax;
+		v2f tMin, tMax;
 		minmax(a, b, tMin, tMax);
 		v2s tMini = max(roundToInt(tMin), V2s(0));
 		v2s tMaxi = min(roundToInt(tMax) + 1, V2s(CHUNK_WIDTH));
@@ -290,28 +307,28 @@ FrameUvs getFrameUvs(f32 time, u32 totalFrames, u32 frameAtlasWidth, v2f frameOf
 #if BUILD_DEBUG
 #define VOXEL_MAP_WIDTH 12
 #else
-#define VOXEL_MAP_WIDTH 32
+#define VOXEL_MAP_WIDTH 24
 #endif
 
-v2 screenToWorld(v2 p, v2 clientSize, v2 cameraP, f32 cameraZoom) {
+v2f screenToWorld(v2f p, v2f clientSize, v2f cameraP, f32 cameraZoom) {
 	return cameraP + (p * 2 - clientSize) / (clientSize.y * cameraZoom);
 }
 
 struct LightTile {
-	v2 pos;
+	v2f pos;
 	f32 size;
-	v3 color;
+	v3f color;
 };
 struct LightAtlas {
-	static constexpr u32 simdElementCount = TL::simdElementCount<sizeof(f32)>;
+	static constexpr u32 simdElementCount = TL::simdElementCount<f32>;
 	static constexpr u32 lightSampleCount = BUILD_DEBUG ? 16 : 64;
 	static constexpr u32 lightSampleCountX = lightSampleCount / simdElementCount;
 	static constexpr u32 lightSampleRandomCount = 64;
 
-	v2 center{};
-	v2 oldCenter{};
-	v3 voxels[VOXEL_MAP_WIDTH][VOXEL_MAP_WIDTH]{};
-	v2 samplingCircle[lightSampleCount * lightSampleRandomCount];
+	v2f center{};
+	v2f oldCenter{};
+	v3f voxels[VOXEL_MAP_WIDTH][VOXEL_MAP_WIDTH]{};
+	v2f samplingCircle[lightSampleCount * lightSampleRandomCount];
 	::Random random;
 };
 void initLightAtlas(LightAtlas &atlas) {
@@ -321,7 +338,7 @@ void initLightAtlas(LightAtlas &atlas) {
 		sincos(angle, atlas.samplingCircle[i].x, atlas.samplingCircle[i].y);
 	}
 }
-void moveLightAtlas(LightAtlas &atlas, v2 newCenter) {
+void moveLightAtlas(LightAtlas &atlas, v2f newCenter) {
 	atlas.center = newCenter;
 	if (atlas.center != atlas.oldCenter) {
 		v2s const d = clamp((v2s)(atlas.center - atlas.oldCenter), V2s(-VOXEL_MAP_WIDTH), V2s(VOXEL_MAP_WIDTH));
@@ -364,7 +381,7 @@ void moveLightAtlas(LightAtlas &atlas, v2 newCenter) {
 	}
 	atlas.oldCenter = atlas.center;
 }
-u32 updateLightAtlas(LightAtlas &atlas, Renderer &renderer, bool inverseCheckerboard, f32 timeDelta,
+u32 updateLightAtlas(LightAtlas &atlas, Renderer &renderer, b32 inverseCheckerboard, f32 timeDelta,
 					 View<LightTile> allRaycastTargets) {
 	PROFILE_FUNCTION;
 	// static auto samplingCircleX = [&] {
@@ -382,71 +399,111 @@ u32 updateLightAtlas(LightAtlas &atlas, Renderer &renderer, bool inverseCheckerb
 
 	std::atomic_uint32_t totalRaysCast = 0;
 
+	s32xm const sampleOffsetsx = [&]() {
+		if constexpr (atlas.simdElementCount == 4)
+			return s32x4{0,1,2,3};
+		else if constexpr (atlas.simdElementCount == 8)
+			return s32x8{0, 1, 2, 3, 4, 5, 6, 7};
+		else
+			static_assert(false, "can't initialize 'sampleOffsetsx'");
+	}();
+
 	auto cast = [&](u32 voxelY) {
+		//LightTile tilesToTest[1024];
 		for (u32 voxelX = 0; voxelX < VOXEL_MAP_WIDTH; ++voxelX) {
-			bool skip = (voxelY & 1) ^ (voxelX & 1);
-			if (inverseCheckerboard)
-				skip = !skip;
-			if (skip)
+			if ((voxelY & 1) ^ (voxelX & 1) ^ inverseCheckerboard)
 				continue;
-			atlas.random.seed >>= 1;
-			v2 rayBegin = V2f((f32)voxelX, (f32)voxelY) + atlas.center - VOXEL_MAP_WIDTH * 0.5f;
-			v3 vox{};
+			// atlas.random.seed >>= 1;
+			v2f rayBegin = V2f((f32)voxelX, (f32)voxelY) + atlas.center - VOXEL_MAP_WIDTH * 0.5f;
+			v3f vox{};
 #if 1
-			v2x rayBeginX = V2fx(rayBegin);
-			v3x voxX{};
-			for (u32 sampleIndex = 0; sampleIndex < atlas.lightSampleCountX; ++sampleIndex) {
-				v2x dir;
+			v2fxm rayBeginX = V2fxm(rayBegin);
+			v3fxm voxX{};
+			for (s32 sampleIndex = 0; sampleIndex < atlas.lightSampleCountX; ++sampleIndex) {
+				v2fxm dir;
 				// dir = samplingCircleX[sampleIndex * lightSampleRandomCount + random.u32() %
 				// lightSampleRandomCount];
+#if 1
+				s32xm offsets = sizeof(f32) * 2 * ((sampleIndex * (s32)atlas.simdElementCount + sampleOffsetsx) *
+										 atlas.lightSampleRandomCount +
+									 atlas.random.type<s32xm>() % atlas.lightSampleRandomCount);
+				gather(dir.x, offsets, &atlas.samplingCircle[0].x);
+				gather(dir.y, offsets, &atlas.samplingCircle[0].y);
+#else
 				for (u32 i = 0; i < atlas.simdElementCount; ++i)
-					((v2 *)&dir)[i] =
+					dir[i] =
 						atlas.samplingCircle[(sampleIndex * atlas.simdElementCount + i) * atlas.lightSampleRandomCount +
 											 atlas.random.u32() % atlas.lightSampleRandomCount];
 				dir = pack(dir);
+#endif
 
-				v2x rayEnd = rayBeginX + dir * (VOXEL_MAP_WIDTH / 2);
+				f32 const maxRayLength = VOXEL_MAP_WIDTH / 2 * sqrt2;
 
-				v2x tMin, tMax;
+				f32xm closestDistanceX = F32xm(pow2(maxRayLength));
+				v2fxm rayEnd = rayBeginX + dir * maxRayLength;
+
+#if 1
+				v2fxm tMin, tMax;
+				minmax(rayBeginX, rayEnd, tMin, tMax);
+				u32 tileCount = 0;
+				v2fxm point, normal;
+				v3fxm hitColor{};
+				for (auto const &tile : allRaycastTargets) {
+					if (anyTrue(inBounds(V2fxm(tile.pos), tMin - tile.size, tMax + tile.size))) {
+						auto raycastMask = raycastRect(rayBeginX, rayEnd, V2fxm(tile.pos), V2fxm(tile.size), point,
+													   normal);
+
+						f32xm dist = distanceSqr(rayBeginX, point);
+						auto mask = raycastMask && dist < closestDistanceX;
+						closestDistanceX = select(mask, dist, closestDistanceX);
+						hitColor = select(mask, V3fxm(tile.color), hitColor);
+						// rayEnd = rayBeginX + dir * sqrt(closestDistanceX);
+						// minmax(rayBeginX, rayEnd, tMin, tMax);
+						++tileCount;
+					}
+				}
+#else
+				v2fxm tMin, tMax;
 				minmax(rayBeginX, rayEnd, tMin, tMax);
 
-				LightTile tilesToTest[1024];
 				u32 tileCount = 0;
 				for (auto const &tile : allRaycastTargets) {
-					if (anyTrue(inBounds(V2fx(tile.pos), tMin - tile.size, tMax + tile.size))) {
+					if (anyTrue(inBounds(V2fxm(tile.pos), tMin - tile.size, tMax + tile.size))) {
 						tilesToTest[tileCount++] = tile;
 					}
 				}
 
-				f32x closestDistanceX = F32x(INFINITY);
-				v2x point, normal;
-				v3x hitColor{};
+				v2fxm point, normal;
+				v3fxm hitColor{};
 				for (u32 i = 0; i < tileCount; ++i) {
 					LightTile *tile = tilesToTest + i;
-					auto raycastMask = raycastRect(rayBeginX, rayEnd, V2fx(tile->pos), V2fx(tile->size), point, normal);
+					auto raycastMask = raycastRect(rayBeginX, rayEnd, V2fxm(tile->pos), V2fxm(tile->size), point,
+												   normal);
 
-					f32x dist = distanceSqr(rayBeginX, point);
+					f32xm dist = distanceSqr(rayBeginX, point);
 					auto mask = raycastMask && dist < closestDistanceX;
 					closestDistanceX = select(mask, dist, closestDistanceX);
-					hitColor = select(mask, V3fx(tile->color), hitColor);
+					hitColor = select(mask, V3fxm(tile->color), hitColor);
+					// rayEnd = rayBeginX + dir * sqrt(closestDistanceX);
 				}
+#endif
 				totalRaysCast += tileCount * atlas.simdElementCount;
 				voxX += hitColor * 10;
 			}
 			voxX = unpack(voxX);
 			for (u32 i = 0; i < atlas.simdElementCount; ++i) {
-				vox += ((v3 *)&voxX)[i];
+				vox += voxX[i];
 			}
 #else
 			for (u32 i = 0; i < lightSampleCount; ++i) {
-				v2 dir = samplingCircle[i * lightSampleRandomCount + atlas.random.u32() % lightSampleRandomCount];
-				v2 rayEnd = rayBegin + dir * (VOXEL_MAP_WIDTH / 2);
+				v2f dir = samplingCircle[i * lightSampleRandomCount + atlas.random.u32() % lightSampleRandomCount];
+				v2f rayEnd = rayBegin + dir * (VOXEL_MAP_WIDTH / 2);
 
-				v2 tMin, tMax;
+				v2f tMin, tMax;
 				minmax(rayBegin, rayEnd, tMin, tMax);
 
 				f32 closestDistance = INFINITY;
-				v2 point, normal;
+				v2f point, normal;
 				v3 hitColor{};
 
 				LightTile tilesToTest[64];
@@ -475,56 +532,63 @@ u32 updateLightAtlas(LightAtlas &atlas, Renderer &renderer, bool inverseCheckerb
 		}
 	};
 	if (timeDelta) {
+		WorkQueue queue{};
 		for (u32 i = 0; i < VOXEL_MAP_WIDTH; ++i) {
-			pushWork("raycast", cast, i);
+			queue.push("raycast", cast, i);
 		}
-		completeAllWork();
+		queue.completeAllWork();
 	}
 	return totalRaysCast;
 }
 
-void addSoundSample(u32 targetSampleRate, s16 *subsample, SoundBuffer const &sound, f64 &playCursor, f32 volume[2],
+void addSoundSamples(u32 targetSampleRate, s16 *subsample, u32 dstSampleCount, SoundBuffer const &sound, f64 &playCursor, f32 volume[2],
 					f32 pitch = 1.0f, bool looping = false) {
-	u32 sampleOffset = (u32)map(playCursor, 0.0f, targetSampleRate, 0.0f, sound.sampleRate);
+	while (dstSampleCount--) {
+		u32 sampleOffset = (u32)map(playCursor, 0.0f, targetSampleRate, 0.0f, sound.sampleRate);
 
-	if (looping)
-		sampleOffset %= sound.sampleCount;
-	else
-		sampleOffset = min(sampleOffset, sound.sampleCount - 1);
+		if (looping)
+			sampleOffset %= sound.sampleCount;
+		else
+			sampleOffset = min(sampleOffset, sound.sampleCount - 1);
 
-	s16 *musicSubsample = (s16 *)sound.data + sampleOffset * sound.numChannels;
-	if (sound.numChannels == 2) {
-		for (u32 channelIndex = 0; channelIndex < 2; ++channelIndex) {
-			*subsample++ += (s16)((*musicSubsample++ >> 6) * volume[channelIndex]);
+		s16 *musicSubsample = (s16 *)sound.data + sampleOffset * sound.numChannels;
+		if (sound.numChannels == 2) {
+			for (u32 channelIndex = 0; channelIndex < 2; ++channelIndex) {
+				*subsample++ += (s16)((*musicSubsample++ >> 6) * volume[channelIndex]);
+			}
+		} else if (sound.numChannels == 1) {
+			s16 result = *musicSubsample++ >> 6;
+			for (u32 channelIndex = 0; channelIndex < 2; ++channelIndex) {
+				*subsample++ += (s16)(result * volume[channelIndex]);
+			}
+		} else {
+			INVALID_CODE_PATH("audio channel count mismatch");
 		}
-	} else if (sound.numChannels == 1) {
-		s16 result = *musicSubsample++ >> 6;
-		for (u32 channelIndex = 0; channelIndex < 2; ++channelIndex) {
-			*subsample++ += (s16)(result * volume[channelIndex]);
-		}
-	} else {
-		INVALID_CODE_PATH("audio channel count mismatch");
-	}
 
-	playCursor += pitch;
-	if (looping && playCursor > sound.sampleCount) {
-		playCursor -= sound.sampleCount;
+		playCursor += pitch;
+		if (playCursor > sound.sampleCount) {
+			if (looping) {
+				playCursor -= sound.sampleCount;
+			} else {
+				break;
+			}
+		}
 	}
 }
 
 struct GameState {
-	v2 playerP = V2f((CHUNK_WIDTH - 1) * 0.5f);
-	v2 playerV{};
+	v2f playerP = V2f((CHUNK_WIDTH - 1) * 0.5f);
+	v2f playerV{};
 
 	f32 const playerR = 0.4f;
 
-	v2 cameraP = playerP;
+	v2f cameraP = playerP;
 	f32 targetCamZoom = 1.0f / 8;
 	f32 camZoom = targetCamZoom;
 	f32 fireTimer = 0.0f;
-	f32 fireDelta = 0.5f;
+	f32 fireDelta = 60.0f / 113.5f;
 
-	v2 pixelsInMeter;
+	v2f pixelsInMeter;
 
 	TileStorage tiles = genTiles();
 
@@ -558,11 +622,30 @@ struct GameState {
 	SoundBuffer music, shotSound, explosionSound, ultimateSound;
 
 	struct PlayingSound {
-		SoundBuffer &sound;
+		SoundBuffer const *sound;
+		bool looping;
 		v2f position;
+		f32 volume;
+		f32 flatness;
 		f64 cursor;
-		f32 volume[2];
+
+		// temporary
+		f32 channelVolume[2];
 	};
+	PlayingSound createSound(SoundBuffer const &sound, v2f position, f32 volume = 1.0f, bool looping = false, f32 flatness = 0.0f) {
+		PlayingSound result;
+		result.sound = &sound;
+		result.looping = looping;
+		result.position = position;
+		result.volume = volume;
+		result.flatness = flatness;
+		result.cursor = 0.0;
+		return result;
+	}
+	PlayingSound createSound(SoundBuffer const &sound, f32 volume = 1.0f, bool looping = false) {
+		return createSound(sound, {}, volume, looping, 1.0f);
+	}
+
 	UnorderedList<PlayingSound> playingSounds;
 
 	enum class State { game, menu };
@@ -577,21 +660,21 @@ struct GameState {
 	};
 	DebugProfile debugProfile{};
 
-	RaycastResult raycastBullet(u32 ignoredLayers, v2 a, v2 b, v2 &point, v2 &normal) {
+	RaycastResult raycast(u32 ignoredLayers, v2f a, v2f b, v2f &point, v2f &normal) {
 		View players = {&playerP, 1};
-		return ::raycastBullet(&tiles, (ignoredLayers & RaycastLayer::bot) ? View<Bot>{} : bots,
-							   (ignoredLayers & RaycastLayer::player) ? View<v2f>{} : players, a, b, point, normal);
+		return ::raycast(&tiles, (ignoredLayers & RaycastLayer::bot) ? View<Bot>{} : bots,
+						 (ignoredLayers & RaycastLayer::player) ? View<v2f>{} : players, a, b, point, normal);
 	}
-	void spawnExplosion(v2 position, v2 incoming, v2 normal) {
+	void spawnExplosion(v2f position, v2f incoming, v2f normal) {
 		Explosion ex;
 		ex.position = position;
 		ex.maxLifeTime = ex.remainingLifeTime = 0.75f + random.f32() * 0.5f;
 		ex.rotationOffset = random.f32() * (2 * pi);
 		explosions.push_back(ex);
 
-		v2 nin = normalize(incoming);
+		v2f nin = normalize(incoming);
 		f32 range = -dot(nin, normal);
-		v2 rin = reflect(nin, normal);
+		v2f rin = reflect(nin, normal);
 		f32 rinAngle = atan2f(rin.x, rin.y);
 
 		Ember e;
@@ -605,9 +688,9 @@ struct GameState {
 			e.rotationOffset = rnd[3] * (2 * pi);
 			embers.push_back(e);
 		}
-		playingSounds.push_back({explosionSound, ex.position});
+		playingSounds.push_back(createSound(explosionSound, ex.position));
 	}
-	void spawnBullet(u32 ignoredLayers, v2 position, f32 rotation, f32 velocity) {
+	void spawnBullet(u32 ignoredLayers, v2f position, f32 rotation, f32 velocity) {
 		Bullet b;
 		b.ignoredLayers = ignoredLayers;
 		b.position = position;
@@ -616,7 +699,7 @@ struct GameState {
 		b.velocity *= velocity;
 		bullets.push_back(b);
 	}
-	void spawnBullet(u32 ignoredLayers, v2 position, v2 velocity) {
+	void spawnBullet(u32 ignoredLayers, v2f position, v2f velocity) {
 		Bullet b;
 		b.ignoredLayers = ignoredLayers;
 		b.position = position;
@@ -625,8 +708,8 @@ struct GameState {
 		bullets.push_back(b);
 	}
 
-	Tile createTile(v2 position, v2 uv0, v2 uv1, f32 uvMix, v2 uvScale, v2 size = V2f(1.0f), f32 rotation = 0.0f,
-					v4 color = V4f(1)) {
+	Tile createTile(v2f position, v2f uv0, v2f uv1, f32 uvMix, v2f uvScale, v2f size = V2f(1.0f), f32 rotation = 0.0f,
+					v4f color = V4f(1)) {
 		Tile t{};
 		t.position = position;
 		t.uv0 = uv0;
@@ -638,10 +721,10 @@ struct GameState {
 		t.color = color;
 		return t;
 	}
-	Tile createTile(v2 position, v2 uv0, v2 uvScale, v2 size = V2f(1.0f), f32 rotation = 0.0f, v4 color = V4f(1)) {
+	Tile createTile(v2f position, v2f uv0, v2f uvScale, v2f size = V2f(1.0f), f32 rotation = 0.0f, v4f color = V4f(1)) {
 		return createTile(position, uv0, {}, 0, uvScale, size, rotation, color);
 	}
-	Light createLight(v3 color, v2 position, f32 radius, v2 clientSize) {
+	Light createLight(v3f color, v2f position, f32 radius, v2f clientSize) {
 		Light l;
 		l.color = color;
 		l.radius = camZoom * radius * 2;
@@ -650,12 +733,12 @@ struct GameState {
 		return l;
 	}
 
-	void drawText(Renderer &renderer, View<Label> labels, v2 clientSize) {
-		v2 textScale{11, 22};
+	void drawText(Renderer &renderer, View<Label> labels, v2f clientSize) {
+		v2f textScale{11, 22};
 
 		tilesToDraw.clear();
 		for (auto &l : labels) {
-			v2 p = l.p / textScale;
+			v2f p = l.p / textScale;
 			p.y *= -1;
 			f32 row = 0.0f;
 			f32 column = 0.0f;
@@ -668,7 +751,7 @@ struct GameState {
 				f32 u = ((u8)c % 16) * 0.0625f;
 				f32 v = ((u8)c / 16) * 0.0625f;
 				tilesToDraw.push_back(
-					createTile(p + v2{column + 0.5f, row - 0.5f}, {u, v}, V2f(1.0f / 16.0f), V2f(1.0f), 0, l.color));
+					createTile(p + v2f{column + 0.5f, row - 0.5f}, {u, v}, V2f(1.0f / 16.0f), V2f(1.0f), 0, l.color));
 				column += 1.0f;
 			}
 		}
@@ -682,13 +765,13 @@ struct GameState {
 		renderer.bindTexture(fontTexture, Stage::ps, 0);
 		renderer.draw((u32)tilesToDraw.size() * 6, 0);
 	}
-	void drawRect(Renderer &renderer, View<Rect> rects, v2 clientSize) {
+	void drawRect(Renderer &renderer, View<Rect> rects, v2f clientSize) {
 		tilesToDraw.clear();
 		for (auto r : rects) {
 			r.pos.y = (s32)clientSize.y - r.pos.y;
 			// printf("%i\n", r.pos.y);
 			tilesToDraw.push_back(
-				createTile((v2)r.pos + (v2)r.size * V2f(0.5f, -0.5f), {}, {}, (v2)r.size, 0, r.color));
+				createTile((v2f)r.pos + (v2f)r.size * V2f(0.5f, -0.5f), {}, {}, (v2f)r.size, 0, r.color));
 		}
 		renderer.updateBuffer(tilesBuffer, tilesToDraw.data(), (u32)tilesToDraw.size() * sizeof(tilesToDraw[0]));
 
@@ -697,7 +780,7 @@ struct GameState {
 		/*
 		m4 m = m4::scaling(1.0f / clientSize, 0);
 		for (auto &r : rects) {
-			v4 p = V4f((m * V4f((v2)r.pos, 0, 1)).xy, (m * V4f((v2)r.size, 0, 1)).xy);
+			v4 p = V4f((m * V4f((v2f)r.pos, 0, 1)).xy, (m * V4f((v2f)r.size, 0, 1)).xy);
 			printf("%.3f %.3f %.3f %.3f\n", p.x, p.y, p.z, p.w);
 		}
 		*/
@@ -710,24 +793,32 @@ struct GameState {
 
 	void init(Window &window, Renderer &renderer) {
 		PROFILE_FUNCTION;
-		tileShader = renderer.createShader(DATA "shaders/tile");
-		solidShader = renderer.createShader(DATA "shaders/solid");
-		lightShader = renderer.createShader(DATA "shaders/light");
-		mergeShader = renderer.createShader(DATA "shaders/merge");
+		WorkQueue work;
 
-		tilesBuffer = renderer.createBuffer(0, sizeof(Tile), MAX_TILES);
-		lightsBuffer = renderer.createBuffer(0, sizeof(Light), MAX_LIGHTS);
+		work.push("tileShader",   [&]{ tileShader   = renderer.createShader(DATA "shaders/tile");});
+		work.push("solidShader",  [&]{ solidShader  = renderer.createShader(DATA "shaders/solid");});
+		work.push("lightShader",  [&]{ lightShader  = renderer.createShader(DATA "shaders/light");});
+		work.push("mergeShader",  [&]{ mergeShader  = renderer.createShader(DATA "shaders/merge");});
+		work.push("tilesBuffer",  [&]{ tilesBuffer  = renderer.createBuffer(0, sizeof(Tile), MAX_TILES);});
+		work.push("lightsBuffer", [&]{ lightsBuffer = renderer.createBuffer(0, sizeof(Light), MAX_LIGHTS);});
+		work.push("atlas",        [&]{ atlas = renderer.createTexture(DATA "textures/atlas.png", Address::clamp, Filter::point_point);});
+		work.push("fontTexture",  [&]{ fontTexture = renderer.createTexture(DATA "textures/font.png", Address::clamp, Filter::point_point);});
+		work.push("voxelsTex",    [&]{ voxelsTex = renderer.createTexture(Format::F_RGB32, VOXEL_MAP_WIDTH, VOXEL_MAP_WIDTH, Address::border,
+																	Filter::linear_linear, {});});
 
-		atlas = renderer.createTexture(DATA "textures/atlas.png", Address::clamp, Filter::point_point);
-		fontTexture = renderer.createTexture(DATA "textures/font.png", Address::clamp, Filter::point_point);
-		voxelsTex = renderer.createTexture(Format::F_RGB32, VOXEL_MAP_WIDTH, VOXEL_MAP_WIDTH, Address::border,
-										   Filter::linear_linear, v4{});
-		initLightAtlas(lightAtlas);
+		work.push("initLightAtlas", initLightAtlas, std::ref(lightAtlas));
 
-		music = loadWaveFile(DATA "audio/music.wav");
-		shotSound = loadWaveFile(DATA "audio/shot.wav");
-		explosionSound = loadWaveFile(DATA "audio/explosion.wav");
-		ultimateSound = loadWaveFile(DATA "audio/ultimate.wav");
+		work.push("music", [&] { 
+			music = loadWaveFile(DATA "audio/music.wav");
+			playingSounds.push_back(createSound(music, 1.0f, true));
+		});
+
+		work.push("shotSound",      [&]{ shotSound = loadWaveFile(DATA "audio/shot.wav");});
+		work.push("explosionSound", [&]{ explosionSound = loadWaveFile(DATA "audio/explosion.wav");});
+		work.push("ultimateSound",  [&]{ ultimateSound = loadWaveFile(DATA "audio/ultimate.wav");});
+
+
+		work.completeAllWork();
 	}
 	void resize(Window &window, Renderer &renderer) {
 		PROFILE_FUNCTION;
@@ -755,7 +846,7 @@ struct GameState {
 				sampleCount);
 		msaaShader = renderer.createShader(DATA "shaders/msaa", StringView(msaaPrefix, strlen(msaaPrefix)));
 
-		pixelsInMeter = (v2)window.clientSize / (f32)window.clientSize.y * camZoom;
+		pixelsInMeter = (v2f)window.clientSize / (f32)window.clientSize.y * camZoom;
 	}
 	void update(Window &window, Renderer &renderer, Input const &input, Time &time) {
 		// time.targetFrameTime = 0.0f;
@@ -802,13 +893,13 @@ struct GameState {
 
 		f32 scaledDelta = time.delta * timeScale;
 
-		v2 move{};
+		v2f move{};
 		if (currentState == State::game) {
 			move.x += input.keyHeld('D') - input.keyHeld('A');
 			move.y += input.keyHeld('W') - input.keyHeld('S');
 		}
 
-		v2 targetPlayerV = normalize(move, {});
+		v2f targetPlayerV = normalize(move, {});
 
 		playerV = moveTowards(playerV, targetPlayerV, scaledDelta * 10);
 
@@ -827,13 +918,13 @@ struct GameState {
 			bot.velocity = lerp(bot.velocity, velocity, scaledDelta * 10.0f);
 			bot.position = movePlayer(tiles, time, bot.position, bot.velocity * scaledDelta * 3, playerR);
 
-			if (bot.fireTimer >= 1.0f) {
+			if (bot.fireTimer >= fireDelta * 2) {
 				v2f point, normal;
-				if (::raycastBullet(&tiles, {}, {&playerP, 1}, bot.position, playerP, point, normal).type ==
+				if (::raycast(&tiles, {}, {&playerP, 1}, bot.position, playerP, point, normal).type ==
 					RaycastResultType::player) {
-					bot.fireTimer -= 1.0f;
+					bot.fireTimer -= fireDelta * 2;
 					spawnBullet(RaycastLayer::bot, bot.position, normalize(playerP - bot.position, {1}));
-					playingSounds.push_back({shotSound, bot.position});
+					playingSounds.push_back(createSound(shotSound, bot.position));
 				}
 			} else {
 				bot.fireTimer += scaledDelta;
@@ -861,9 +952,9 @@ struct GameState {
 				--i;
 				continue;
 			}
-			v2 nextPos = b.position + b.velocity * scaledDelta * 10;
-			v2 hitPoint, hitNormal;
-			auto raycastResult = raycastBullet(b.ignoredLayers, b.position, nextPos, hitPoint, hitNormal);
+			v2f nextPos = b.position + b.velocity * scaledDelta * 10;
+			v2f hitPoint, hitNormal;
+			auto raycastResult = raycast(b.ignoredLayers, b.position, nextPos, hitPoint, hitNormal);
 			if (raycastResult.type == RaycastResultType::bot) {
 				bots.erase(bots[raycastResult.target]);
 				++botsKilled;
@@ -911,7 +1002,7 @@ struct GameState {
 
 		v2s mousePos = input.mousePosition;
 		mousePos.y = (s32)window.clientSize.y - mousePos.y;
-		v2f mouseWorldPos = screenToWorld((v2)mousePos, (v2)window.clientSize, cameraP, camZoom);
+		v2f mouseWorldPos = screenToWorld((v2f)mousePos, (v2f)window.clientSize, cameraP, camZoom);
 
 		if (currentState == State::game) {
 			if (fireTimer > 0) {
@@ -936,7 +1027,7 @@ struct GameState {
 							}
 						}
 					}
-					playingSounds.push_back({shotSound, playerP});
+					playingSounds.push_back(createSound(shotSound, playerP));
 				}
 			}
 			if (input.mouseDown(1) && hasUltimateAttack()) {
@@ -944,7 +1035,7 @@ struct GameState {
 				for (u32 i = 0; i < 25; ++i) {
 					spawnBullet(RaycastLayer::player, playerP, i * 0.08f * pi, 1);
 				}
-				playingSounds.push_back({ultimateSound, playerP});
+				playingSounds.push_back(createSound(ultimateSound, playerP));
 			}
 		}
 
@@ -969,14 +1060,14 @@ struct GameState {
 
 		for (u32 x = 0; x < CHUNK_WIDTH; ++x) {
 			for (u32 y = 0; y < CHUNK_WIDTH; ++y) {
-				v4 color = V4f(1);
+				v4f color = V4f(1);
 				if (getTile(tiles, x, y)) {
-					allRaycastTargets.push_back({(v2)v2u{x, y}, 0.5f, 0.0f});
+					allRaycastTargets.push_back({(v2f)v2u{x, y}, 0.5f, 0.0f});
 				} else {
 					color.xyz *= 0.25f;
 				}
 				tilesToDraw.push_back(
-					createTile((v2)v2u{x, y}, offsetAtlasTile(1, 0), ATLAS_ENTRY_SIZE, V2f(1.0f), 0.0f, color));
+					createTile((v2f)v2u{x, y}, offsetAtlasTile(1, 0), ATLAS_ENTRY_SIZE, V2f(1.0f), 0.0f, color));
 			}
 		}
 
@@ -984,10 +1075,11 @@ struct GameState {
 		for (auto &b : bullets) {
 			u32 frame = (u32)(b.remainingLifetime * 12) % 4;
 			v2u framePos{frame % 2, frame / 2};
-			tilesToDraw.push_back(createTile(b.position, offsetAtlasTile(0, 1) + (v2)framePos * ATLAS_ENTRY_SIZE * 0.5f,
+			tilesToDraw.push_back(createTile(b.position,
+											 offsetAtlasTile(0, 1) + (v2f)framePos * ATLAS_ENTRY_SIZE * 0.5f,
 											 ATLAS_ENTRY_SIZE * 0.5f, V2f(0.5f), b.rotation));
-			lightsToDraw.push_back(createLight({.2, .3, 1}, b.position, 1, (v2)window.clientSize));
-			allRaycastTargets.push_back({b.position, 0.25f, v3{.2, .3, 1} * 0.5f});
+			lightsToDraw.push_back(createLight({.2, .3, 1}, b.position, 1, (v2f)window.clientSize));
+			allRaycastTargets.push_back({b.position, 0.25f, v3f{.2, .3, 1} * 0.5f});
 		}
 		for (auto &e : embers) {
 			f32 t = e.remainingLifeTime / e.maxLifeTime;
@@ -996,7 +1088,7 @@ struct GameState {
 			tilesToDraw.push_back(createTile(e.position, uvs.uv0, uvs.uv1, uvs.uvMix, ATLAS_ENTRY_SIZE * 0.25f,
 											 V2f(map(tt, 0, 1, 0.1f, 0.25f)), t * 3 + e.rotationOffset));
 			//	allRaycastTargets.push_back({e.position, max(0.0f, t - 0.9f) * 5.0f, v3{1, .5, .1} * 10.0f});
-			lightsToDraw.push_back(createLight(v3{1, .5, .1} * tt * 5, e.position, .5f, (v2)window.clientSize));
+			lightsToDraw.push_back(createLight(v3f{1, .5, .1} * tt * 5, e.position, .5f, (v2f)window.clientSize));
 		}
 		for (auto &e : explosions) {
 			f32 t = e.remainingLifeTime / e.maxLifeTime;
@@ -1005,11 +1097,12 @@ struct GameState {
 
 			tilesToDraw.push_back(createTile(e.position, uvs.uv0, uvs.uv1, uvs.uvMix, ATLAS_ENTRY_SIZE,
 											 V2f(map(t, 0, 1, 0.75f, 1)), t * 2 + e.rotationOffset));
-			allRaycastTargets.push_back({e.position, max(0.0f, t - 0.8f) * 5.0f, v3{1, .5, .1} * 10.0f});
-			lightsToDraw.push_back(createLight(v3{1, .5, .1} * t * 5, e.position, 3, (v2)window.clientSize));
+			allRaycastTargets.push_back({e.position, max(0.0f, t - 0.8f) * 5.0f, v3f{1, .5, .1} * 10.0f});
+			lightsToDraw.push_back(createLight(v3f{1, .5, .1} * t * 5, e.position, 3, (v2f)window.clientSize));
 		}
 		for (auto &bot : bots) {
 			tilesToDraw.push_back(createTile(bot.position, offsetAtlasTile(0, 0), ATLAS_ENTRY_SIZE));
+			allRaycastTargets.push_back({bot.position, playerR, {}});
 		}
 		tilesToDraw.push_back(createTile(playerP, offsetAtlasTile(0, 0), ATLAS_ENTRY_SIZE));
 
@@ -1019,8 +1112,8 @@ struct GameState {
 											 V2f(1 + auraSize), time.time * pi, V4f(V3f(1), auraSize)));
 		}
 
-		allRaycastTargets.push_back({playerP, 0.4f, V3f(1.0f)});
-		// lightsToDraw.push_back(createLight(V3f(1), playerP, 7, (v2)window.clientSize));
+		allRaycastTargets.push_back({playerP, playerR, V3f(1.0f)});
+		// lightsToDraw.push_back(createLight(V3f(1), playerP, 7, (v2f)window.clientSize));
 		PROFILE_END;
 
 		renderer.updateBuffer(tilesBuffer, tilesToDraw.data(), (u32)tilesToDraw.size() * sizeof(tilesToDraw[0]));
@@ -1032,7 +1125,7 @@ struct GameState {
 
 		moveLightAtlas(lightAtlas, floor(playerP + 1.0f));
 		u64 raycastCyBegin = __rdtsc();
-		debugProfile.totalRaysCast = updateLightAtlas(lightAtlas, renderer, time.frameCount & 1, scaledDelta,
+		debugProfile.totalRaysCast = updateLightAtlas(lightAtlas, renderer, (b32)time.frameCount & 1, scaledDelta,
 													  allRaycastTargets);
 		debugProfile.raycastCy = __rdtsc() - raycastCyBegin;
 		renderer.updateTexture(voxelsTex, lightAtlas.voxels);
@@ -1061,7 +1154,7 @@ struct GameState {
 		renderer.setBlend(Blend::one, Blend::one, BlendOp::add);
 		renderer.draw((u32)lightsToDraw.size() * 6);
 
-		v2 voxScale = v2{(f32)window.clientSize.x / window.clientSize.y, 1};
+		v2f voxScale = v2f{(f32)window.clientSize.x / window.clientSize.y, 1};
 		renderer.setMatrix(0, m4::translation((cameraP - lightAtlas.center) / VOXEL_MAP_WIDTH * 2, 0) *
 								  m4::translation(V2f(1.0f / VOXEL_MAP_WIDTH), 0) *
 								  m4::scaling(voxScale / VOXEL_MAP_WIDTH / camZoom * 2, 1));
@@ -1122,7 +1215,7 @@ struct GameState {
 		};
 		drawUiTiles();
 
-		drawText(renderer, labels, (v2)window.clientSize);
+		drawText(renderer, labels, (v2f)window.clientSize);
 		labels.clear();
 
 		uiTiles.clear();
@@ -1152,13 +1245,11 @@ pqrstuvwxyz{|}~
 àáâãäåæçèéêëìíîï
 ðñòóôõö÷øùúûüýþÿ)"});
 #endif
-		drawText(renderer, labels, (v2)window.clientSize);
-	}
-	f64 musicPlayCursor = 0;
-
-	void fillSoundBuffer(Audio const &audio, s16 *subsample, u32 sampleCount) {
+		drawText(renderer, labels, (v2f)window.clientSize);
+		
+		
 		for (auto sound = playingSounds.begin(); sound != playingSounds.end();) {
-			if (sound->cursor >= shotSound.sampleCount) {
+			if (!sound->looping && sound->cursor >= shotSound.sampleCount) {
 				playingSounds.erase(sound);
 				continue;
 			}
@@ -1175,46 +1266,51 @@ pqrstuvwxyz{|}~
 			f32 dist = distanceSqr(sound.position, cameraP);
 			volume = lerp(volume, V2f(1.0f), 1.0f / (dist * 0.1f + 1.0f));
 			volume *= 1.0f / (dist * 0.02f + 1.0f);
-			memcpy(sound.volume, &volume, sizeof(sound.volume));
+
+			volume = lerp(volume, V2f(1.0f), sound.flatness);
+
+			volume *= sound.volume;
+
+			memcpy(sound.channelVolume, &volume, sizeof(sound.channelVolume));
 		}
-		while (sampleCount--) {
-			s16 subsamples[2]{};
+	}
+	f64 musicPlayCursor = 0;
 
-			if (music.data)
-				addSoundSample(audio.sampleRate, subsamples, music, musicPlayCursor, V2f(1).data(), 1.0f, true);
-
-			for (auto &sound : playingSounds) {
-				if (sound.sound.data)
-					addSoundSample(audio.sampleRate, subsamples, sound.sound, sound.cursor, sound.volume, timeScale);
-			}
-
-			for (auto s : subsamples)
-				*subsample++ = s;
+	void fillSoundBuffer(Audio const &audio, s16 *subsample, u32 sampleCount) {
+		PROFILE_FUNCTION;
+		
+		memset(subsample, 0, sampleCount * sizeof(*subsample) * 2);
+		
+		for (auto &sound : playingSounds) {
+			if (sound.sound->data)
+				addSoundSamples(audio.sampleRate, subsample, sampleCount, *sound.sound, sound.cursor, sound.channelVolume, timeScale);
 		}
 	}
 };
 
 namespace GameAPI {
 Profiler::Stats startProfile;
+ThreadStats startThreadStats;
 ::Random random;
 s32 threadCount;
 u32 sortIndex = 0;
 void fillStartInfo(StartInfo &info) {
 	--info.workerThreadCount;
 	info.sampleCount = 4;
-	threadCount = (s32)info.workerThreadCount;
+	threadCount = (s32)info.workerThreadCount + 1;
 }
 GameState *start(Window &window, Renderer &renderer) {
 	GameState *game = new GameState;
 	game->init(window, renderer);
 	startProfile = Profiler::getStats();
-	std::sort(startProfile.entries.begin(), startProfile.entries.end(),
-			  [](Profiler::Entry a, Profiler::Entry b) { return a.selfCycles > b.selfCycles; });
+	startThreadStats = getThreadStats();
 	return game;
 }
 void update(GameState &game, Window &window, Renderer &renderer, Input const &input, Time &time) {
 	game.update(window, renderer, input, time);
+}
 
+void endFrame(GameState &game, Window &window, Renderer &renderer, Input const &input, Time &time) {
 	if (input.keyDown(Key_f1)) {
 		game.debugProfile.mode = (u8)((game.debugProfile.mode + 1) % 4);
 	}
@@ -1235,27 +1331,39 @@ tile count: %u)",
 
 		UnorderedList<Label> labels;
 		labels.push_back({V2f(8), debugLabel});
-		game.drawText(renderer, labels, (v2)window.clientSize);
+		game.drawText(renderer, labels, (v2f)window.clientSize);
 	}
-	auto printStats = [](Profiler::Stats const &stats, char *buffer) {
-		u32 offset = 0;
-		for (auto const &stat : stats.entries) {
-			offset += sprintf(buffer + offset, "%35s: %4.1f%%, %10llu cy, %7llu us, %4.1f%%, %10llu cy, %7llu us\n",
-							  stat.name, (f64)stat.selfCycles / stats.totalCycles * 100, stat.selfCycles,
-							  stat.selfMicroseconds, (f64)stat.totalCycles / stats.totalCycles * 100, stat.totalCycles,
-							  stat.totalMicroseconds);
-		}
-		return offset;
-	};
-	if (game.debugProfile.mode == 2) {
+	static bool (**comparers)(Profiler::Entry, Profiler::Entry) = [] {
+		u32 const columnCount = 3;
+		static bool (*result[columnCount * 2])(Profiler::Entry, Profiler::Entry);
+		result[0] = [](Profiler::Entry a, Profiler::Entry b) { return std::string(a.name).compare(b.name) < 0; };
+		result[2] = [](Profiler::Entry a, Profiler::Entry b) { return a.selfCycles < b.selfCycles; };
+		result[4] = [](Profiler::Entry a, Profiler::Entry b) { return a.totalCycles < b.totalCycles; };
+
+		result[1] = [](Profiler::Entry a, Profiler::Entry b) { return result[0](b, a); };
+		result[3] = [](Profiler::Entry a, Profiler::Entry b) { return result[2](b, a); };
+		result[5] = [](Profiler::Entry a, Profiler::Entry b) { return result[4](b, a); };
+
+		return result;
+	}();
+	auto displayInfo = [&](char const *title, Profiler::Stats &stats, ThreadStats &threadStats) {
+		auto printStats = [](Profiler::Stats const &stats, char *buffer) {
+			u32 offset = 0;
+			for (auto const &stat : stats.entries) {
+				offset += sprintf(buffer + offset, "%35s: %4.1f%%, %10llu cy, %4.1f%%, %10llu cy\n",
+								  stat.name, (f64)stat.selfCycles / stats.totalCycles * 100, stat.selfCycles,
+								  (f64)stat.totalCycles / stats.totalCycles * 100, stat.totalCycles);
+			}
+			return offset;
+		};
+
 		UnorderedList<Label> labels;
 		UnorderedList<Rect> rects;
 
 		v2s letterSize{11, 22};
 
 		char debugLabel[1024 * 16];
-		s32 offset = sprintf(debugLabel, "%35s:  Self:                            Total:\n", "Update profile");
-		auto &stats = Profiler::getStats();
+		s32 offset = sprintf(debugLabel, "%35s:  Self:                            Total:\n", title);
 
 		auto contains = [](v2s pos, v2s size, v2s mp) {
 			return pos.x <= mp.x && mp.x < pos.x + size.x && pos.y <= mp.y && mp.y < pos.y + size.y;
@@ -1268,8 +1376,6 @@ tile count: %u)",
 			rects.push_back({pos, size, V4f(c ? 0.75f : 0.5f)});
 			return c && input.mouseUp(0);
 		};
-
-		u32 oldSortIndex = sortIndex;
 
 		auto columnHeader = [&](v2s pos, v2s size, u32 index) {
 			if (button(pos, size)) {
@@ -1286,19 +1392,6 @@ tile count: %u)",
 		columnHeader(V2s(8) + letterSize * v2s{70, 0}, letterSize * v2s{33, 1}, 2);
 
 		//[](Profiler::Entry a, Profiler::Entry b) { return a.selfCycles > b.selfCycles; }
-		static bool (**comparers)(Profiler::Entry, Profiler::Entry) = [] {
-			u32 const columnCount = 3;
-			static bool (*result[columnCount * 2])(Profiler::Entry, Profiler::Entry);
-			result[0] = [](Profiler::Entry a, Profiler::Entry b) { return std::string(a.name).compare(b.name) > 0; };
-			result[2] = [](Profiler::Entry a, Profiler::Entry b) { return a.selfCycles < b.selfCycles; };
-			result[4] = [](Profiler::Entry a, Profiler::Entry b) { return a.totalCycles < b.totalCycles; };
-
-			result[1] = [](Profiler::Entry a, Profiler::Entry b) { return result[0](b, a); };
-			result[3] = [](Profiler::Entry a, Profiler::Entry b) { return result[2](b, a); };
-			result[5] = [](Profiler::Entry a, Profiler::Entry b) { return result[4](b, a); };
-
-			return result;
-		}();
 
 		std::sort(stats.entries.begin(), stats.entries.end(),
 				  comparers[(sortIndex & 0xF) * 2 + (bool)(sortIndex & 0x10)]);
@@ -1310,41 +1403,41 @@ tile count: %u)",
 
 		v2s threadInfoPos{letterSize.x * 105, 8};
 		s32 y = threadInfoPos.y;
-		s32 tableWidth = letterSize.x * 10;
-		auto &threadStats = getThreadStats();
+		s32 tableWidth = letterSize.x * 12;
 		s32 barWidth = 300;
 		rects.push_back({threadInfoPos + v2s{tableWidth, 0}, {barWidth, letterSize.y * threadCount}, V4f(0.5f)});
 		u32 worksDone = 0;
 		for (u32 i = 0; i < (u32)threadStats.size(); ++i) {
-			offset += sprintf(debugLabel + offset, "Thread %u:\n", i);
-			s32 x = threadInfoPos.x + tableWidth;
+			if (i == 0)
+				offset += sprintf(debugLabel + offset, "Main thread\n");
+			else
+				offset += sprintf(debugLabel + offset, "Thread %u:\n", i - 1);
+			//s32 x = threadInfoPos.x + tableWidth;
 			for (auto &stat : threadStats[i]) {
-				random.seed = (s32)(s64)stat.workName;
-				s32 w = (s32)(stat.cycles * (u32)barWidth / stats.totalCycles);
+				random.seed = (u32)(u64)stat.workName;
+				s32 x = threadInfoPos.x + tableWidth + (s32)((stat.startCycle - stats.frameStartCycle) * (u32)barWidth / stats.totalCycles);
+				s32 w = (s32)(stat.cycles() * (u32)barWidth / stats.totalCycles);
 				v2s pos = {x + 1, y + 1};
 				v2s size = {w - 2, letterSize.y - 2};
-				rects.push_back({pos, size, V4f(map(random.v3(), -1, 1, 0.5f, 1.0f), 1.0f)});
+				rects.push_back({pos, size, V4f(map(random.v3f(), -1, 1, 0.5f, 1.0f), 0.5f)});
 				if (contains(pos, size, mp)) {
-					labels.push_back({(v2)mp - v2{0, (f32)letterSize.y}, stat.workName});
+					labels.push_back({(v2f)mp - v2f{0, (f32)letterSize.y}, stat.workName});
 				}
-				x += w;
+				//x += w;
 			}
 			y += letterSize.y;
 			worksDone += (u32)threadStats[i].size();
 		}
-		labels.push_back({(v2)threadInfoPos, debugLabel});
+		labels.push_back({(v2f)threadInfoPos, debugLabel});
 
-		game.drawRect(renderer, rects, (v2)window.clientSize);
-		game.drawText(renderer, labels, (v2)window.clientSize);
+		game.drawRect(renderer, rects, (v2f)window.clientSize);
+		game.drawText(renderer, labels, (v2f)window.clientSize);
+	};
+	if (game.debugProfile.mode == 2) {
+		displayInfo("Update profile", Profiler::getStats(), getThreadStats());
 	}
 	if (game.debugProfile.mode == 3) {
-		char debugLabel[1024 * 16];
-		s32 offset = sprintf(debugLabel, "%35s:  Self:                            Total: %10llu cy, %7llu us\n",
-							 "Start profile", startProfile.totalCycles, startProfile.totalMicroseconds);
-		printStats(startProfile, debugLabel + offset);
-		UnorderedList<Label> labels;
-		labels.push_back({V2f(8), debugLabel});
-		game.drawText(renderer, labels, (v2)window.clientSize);
+		displayInfo("Start profile", startProfile, startThreadStats);
 	}
 }
 void fillSoundBuffer(GameState &game, Audio const &audio, s16 *subsample, u32 sampleCount) {

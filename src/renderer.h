@@ -3,6 +3,12 @@
 #include "window.h"
 #include <vector>
 
+enum class RenderingApi {
+	d3d11, opengl
+};
+
+ENG_API char const *getRendererName(RenderingApi);
+
 #define ID(name)                           \
 	struct name##Id {                      \
 		u32 id = ~0u;                      \
@@ -29,11 +35,11 @@ enum class Format { UN_RGB8, F_R32, F_RGB32, F_RGBA16, count };
 #define R_RESIZE					R_DECORATE(void, resize, (v2u clientSize), (clientSize))
 #define R_PREPARE					R_DECORATE(void, prepare, (), ())
 #define R_PRESENT					R_DECORATE(void, present, (), ())
-#define R_CLEAR_TARGET				R_DECORATE(void, clearRenderTarget, (RenderTargetId rt, v4 color), (rt, color))
+#define R_CLEAR_TARGET				R_DECORATE(void, clearRenderTarget, (RenderTargetId rt, v4f color), (rt, color))
 #define R_CREATE_BUFFER				R_DECORATE(BufferId, createBuffer, (void const* data, u32 stride, u32 count), (data, stride, count))
 #define R_CREATE_SHADER				R_DECORATE(ShaderId, createShader, (char const* path, StringView prefix), (path, prefix))
-#define R_CREATE_TEXTURE_FROM_FILE	R_DECORATE(TextureId, createTextureFromFile, (char const* path, Address address, Filter filter, v4 borderColor), (path, address, filter, borderColor))
-#define R_CREATE_TEXTURE			R_DECORATE(TextureId, createTexture, (Format format, u32 width, u32 height, Address address, Filter filter, v4 borderColor), (format, width, height, address, filter, borderColor))
+#define R_CREATE_TEXTURE_FROM_FILE	R_DECORATE(TextureId, createTextureFromFile, (char const* path, Address address, Filter filter, v4f borderColor), (path, address, filter, borderColor))
+#define R_CREATE_TEXTURE			R_DECORATE(TextureId, createTexture, (Format format, u32 width, u32 height, Address address, Filter filter, v4f borderColor), (format, width, height, address, filter, borderColor))
 #define R_CREATE_RT					R_DECORATE(RenderTargetId, createRenderTarget, (v2u size, Format format, u32 sampleCount), (size, format, sampleCount))
 #define R_DRAW						R_DECORATE(void, draw, (u32 vertexCount, u32 offset), (vertexCount, offset))
 #define R_UPDATE_BUFFER				R_DECORATE(void, updateBuffer, (BufferId buffer, void const* data, u32 size), (buffer, data, size))
