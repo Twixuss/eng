@@ -62,7 +62,7 @@ struct GAME_API Game {
 	}
 	~Game() {}
 };
-namespace GameAPI {
+namespace GameApi {
 WindowCreationInfo getWindowInfo() {
 	WindowCreationInfo info{};
 	info.resizeable = false;
@@ -73,4 +73,4 @@ Game* start() { return new Game; }
 void update(Game& game) { return game.update(); }
 void resize(Game& game) { return game.resize(); }
 void shutdown(Game& game) { delete &game; }
-} // namespace GameAPI
+} // namespace GameApi

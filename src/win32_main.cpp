@@ -1,6 +1,8 @@
 #include "common.h"
+#include "common_internal.h"
 #include "game.h"
 #include "input.h"
+#include "input_internal.h"
 #include "renderer.h"
 
 #include "win32_common.h"
@@ -10,6 +12,11 @@
 struct Win32Window final : Window {
 	bool exitSizeMove;
 };
+struct Win32Input final : Input {
+	static constexpr u32 invalidId = ~0u;
+	u32 joystickId;
+};
+
 void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool resizeable) {
 	PROFILE_FUNCTION;
 
@@ -79,17 +86,53 @@ void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool re
 	timeBeginPeriod(1);
 }
 void destroyWindow(Win32Window &window) { timeEndPeriod(1); }
-void processMessages(Win32Window &window, Input &input) {
+struct DeferredKeyboardInput {
+	u8 key;
+	bool value;
+};
+struct DeferredMouseInput {
+	u8 key;
+	bool value;
+};
+StaticList<DeferredKeyboardInput, 4> deferredKeyboardInput, deferredKeyboardInput2;
+StaticList<DeferredMouseInput, 4> deferredMouseInput, deferredMouseInput2;
+void processMessages(Win32Window &window, Win32Input &input) {
 	PROFILE_FUNCTION;
-	input.swap();
+	swap(input);
 	MSG msg;
+	bool processedKeys[256]{};
+	bool processedMouseKeys[5]{};
+
+	u32 const maxDeferFrames = 25;
+
+	// TODO: i don't know what i am doing
+	for (auto &m : deferredKeyboardInput) {
+		if (processedKeys[m.key]) {
+			deferredKeyboardInput2.push_back_pop_front(m);
+			continue;
+		}
+		input.current.keys[m.key] = m.value;
+		processedKeys[m.key] = true;
+	}
+	deferredKeyboardInput = std::move(deferredKeyboardInput2);
+
+	for (auto &m : deferredMouseInput) {
+		if (processedMouseKeys[m.key]) {
+			deferredMouseInput2.push_back_pop_front(m);
+			continue;
+		}
+		input.current.mouse[m.key] = m.value;
+		processedMouseKeys[m.key] = true;
+	}
+	deferredMouseInput = std::move(deferredMouseInput2);
+
 	while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
 		switch (msg.message) {
 			case WM_KEYUP:
 			case WM_KEYDOWN:
 			case WM_SYSKEYUP:
 			case WM_SYSKEYDOWN: {
-				auto code = (u32)msg.wParam;
+				auto code = (u8)msg.wParam;
 				[[maybe_unused]] bool extended = msg.lParam & u32(1 << 24);
 				bool alt = msg.lParam & u32(1 << 29);
 				bool isRepeated = msg.lParam & u32(1 << 30);
@@ -98,7 +141,12 @@ void processMessages(Win32Window &window, Input &input) {
 					DestroyWindow((HWND)window.handle);
 				}
 				if (isRepeated == wentUp) { // Don't handle repeated
-					input.current.keys[code] = !isRepeated;
+					if (processedKeys[code]) {
+						deferredKeyboardInput.push_back_pop_front({code, !wentUp});
+						continue;
+					}
+					input.current.keys[code] = !wentUp;
+					processedKeys[code] = true;
 				}
 				continue;
 			}
@@ -114,26 +162,27 @@ void processMessages(Win32Window &window, Input &input) {
 					input.mouseDelta += {mouse.lLastX, mouse.lLastY};
 					if (mouse.usButtonFlags & RI_MOUSE_WHEEL)
 						input.mouseWheel += (s16)mouse.usButtonData;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_1_DOWN)
-						input.current.mouse[0] = true;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_1_UP)
-						input.current.mouse[0] = false;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_2_DOWN)
-						input.current.mouse[1] = true;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_2_UP)
-						input.current.mouse[1] = false;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_3_DOWN)
-						input.current.mouse[2] = true;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_3_UP)
-						input.current.mouse[2] = false;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_4_DOWN)
-						input.current.mouse[3] = true;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_4_UP)
-						input.current.mouse[3] = false;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_5_DOWN)
-						input.current.mouse[4] = true;
-					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_5_UP)
-						input.current.mouse[4] = false;
+
+					u8 key = (u8)~0;
+					bool value = false;
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_1_DOWN)	{ key = 0; value = true;  }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_1_UP)		{ key = 0; value = false; }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_2_DOWN)	{ key = 1; value = true;  }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_2_UP)		{ key = 1; value = false; }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_3_DOWN)	{ key = 2; value = true;  }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_3_UP)		{ key = 2; value = false; }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_4_DOWN)	{ key = 3; value = true;  }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_4_UP)		{ key = 3; value = false; }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_5_DOWN)	{ key = 4; value = true;  }
+					if (mouse.usButtonFlags & RI_MOUSE_BUTTON_5_UP)		{ key = 4; value = false; }
+					if (key != (u8)~0) {
+						if (processedMouseKeys[key]) {
+							deferredMouseInput.push_back_pop_front({key, value});
+							continue;
+						}
+						input.current.mouse[key] = value;
+						processedMouseKeys[key] = true;
+					}
 				}
 				continue;
 			}
@@ -141,8 +190,39 @@ void processMessages(Win32Window &window, Input &input) {
 		TranslateMessage(&msg);
 		DispatchMessageA(&msg);
 	}
+	if (input.joystickId != input.invalidId) {
+		JOYINFOEX ji{sizeof(JOYINFOEX), JOY_RETURNALL};
+		switch (joyGetPosEx(input.joystickId, &ji)) {
+			case JOYERR_NOERROR: {
+				if (ji.dwXpos == 65535) ji.dwXpos--;
+				if (ji.dwYpos == 65535) ji.dwYpos--;
+				if (ji.dwZpos == 65535) ji.dwZpos--;
+				if (ji.dwRpos == 65535) ji.dwRpos--;
+				if (ji.dwUpos == 65535) ji.dwUpos--;
+				if (ji.dwVpos == 65535) ji.dwVpos--;
+				f32 axis[6] {
+					(f32)((s32)ji.dwXpos - 32767),
+					(f32)((s32)ji.dwYpos - 32767),
+					(f32)((s32)ji.dwZpos - 32767),
+					(f32)((s32)ji.dwRpos - 32767),
+					(f32)((s32)ji.dwUpos - 32767),
+					(f32)((s32)ji.dwVpos - 32767)
+				};
+				for (u32 i = 0; i < JoyAxis_count; ++i) {
+					input.current.joystick.axis[i] = clamp(map(axis[i], -32767.0f, 32767.0f, -1.0f, 1.0f), -1.0f, 1.0f);
+				}
+				for (int i = 0; i < 32; i++)
+					input.current.joystick.buttons[i] = ji.dwButtons & (1 << i);
+				break;
+			}
+			case JOYERR_UNPLUGGED:
+			case JOYERR_PARMS:
+				input.joystickId = input.invalidId;
+				break;
+		}
+	}
 	if (window.lostFocus || window.exitSizeMove) {
-		input.reset();
+		reset(input);
 	}
 	POINT p;
 	GetCursorPos(&p);
@@ -155,26 +235,20 @@ void finalizeFrame(Win32Window &window, s64 &lastPerfCounter, Time &time) {
 	window.lostFocus = false;
 	window.resized = false;
 	window.exitSizeMove = false;
-	if (!window.fullscreen) {
-		auto secondsElapsed = PerfTimer::getSeconds(lastPerfCounter, PerfTimer::getCounter());
-		if (secondsElapsed < time.targetFrameTime) {
-			s32 msToSleep = (s32)((time.targetFrameTime - secondsElapsed) * 1000.0f);
-			if (msToSleep > 0) {
-				Sleep((DWORD)msToSleep);
-			}
-			auto targetCounter = lastPerfCounter + s64(time.targetFrameTime * PerfTimer::frequency);
-			while (PerfTimer::getCounter() < targetCounter)
-				;
-		}
+	if (window.fullscreen) {
+		time.delta = 0.01666666666f;
+	} else {
+		auto endCounter = PerfTimer::syncWithTime(lastPerfCounter, time.targetDelta);
+		time.delta = PerfTimer::getSeconds(lastPerfCounter, endCounter);
+		lastPerfCounter = endCounter;
 	}
-	auto endCounter = PerfTimer::getCounter();
-	time.delta = PerfTimer::getSeconds(lastPerfCounter, endCounter);
-	lastPerfCounter = endCounter;
 	time.time += time.delta;
 	++time.frameCount;
 }
 
-Input createInput() {
+Win32Input createInput() {
+	PROFILE_FUNCTION;
+
 	RAWINPUTDEVICE mouse = {};
 	mouse.usUsagePage = 0x01;
 	mouse.usUsage = 0x02;
@@ -182,9 +256,123 @@ Input createInput() {
 	if (!RegisterRawInputDevices(&mouse, 1, sizeof(RAWINPUTDEVICE))) {
 		ASSERT(0);
 	}
+	
+	Win32Input input{};
+	
+    u32 numDevs = joyGetNumDevs();
+    if (numDevs != 0) {
+		JOYINFOEX ji;
+		ji.dwSize = sizeof(JOYINFOEX);
+		ji.dwFlags = 0;
 
-	Input input{};
+        bool jc1 = joyGetPosEx(JOYSTICKID1, &ji) == JOYERR_NOERROR;
+        bool jc2 = numDevs == 2 && joyGetPosEx(JOYSTICKID2, &ji) == JOYERR_NOERROR;
+		
+		input.joystickId = jc2 ? JOYSTICKID2 : jc1 ? JOYSTICKID1 : input.invalidId;
+    } else {
+		input.joystickId = input.invalidId;
+	}
+
 	return input;
+}
+
+struct Win32Game final : GameApi::State {
+	HMODULE library;
+	std::mutex mutex;
+	FILETIME lastWriteTime;
+	decltype(GameApi::fillStartInfo) *fillStartInfo;
+	decltype(GameApi::init) *_init;
+	decltype(GameApi::start) *_start;
+	decltype(GameApi::debugStart) *_debugStart;
+	decltype(GameApi::debugReload) *_debugReload;
+	decltype(GameApi::update) *_update;
+	decltype(GameApi::debugUpdate) *_debugUpdate;
+	decltype(GameApi::fillSoundBuffer) *_fillSoundBuffer;
+	decltype(GameApi::shutdown) *_shutdown;
+
+	void init() { _init(*this); }
+	void start(Window &window, Renderer &renderer, Input &input, Time &time) { _start(*this, window, renderer, input, time); }
+	void update(Window &window, Renderer &renderer, Input &input, Time &time) { _update(*this, window, renderer, input, time); }
+	void shutdown() { _shutdown(*this); }
+	void debugReload() { _debugReload(*this); }
+	void fillSoundBuffer(Audio &audio, s16 *subSample, u32 subSampleCount) { _fillSoundBuffer(*this, audio, subSample, subSampleCount); }
+	void debugStart(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats &&stats) { _debugStart(*this, window, renderer, input, time, std::move(stats)); }
+	void debugUpdate(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats &&stats) { _debugUpdate(*this, window, renderer, input, time, std::move(stats)); }
+
+};
+
+FILETIME getLastWriteTime(char const *filename) {
+	WIN32_FIND_DATAA data;
+	FindFirstFileA(filename, &data);
+	return data.ftLastWriteTime;
+}
+
+void loadGame(Win32Game &game) {
+	PROFILE_FUNCTION;
+
+	u32 tryCount = 0;
+	while (!CopyFileA("game.dll", "_game.dll", false)) {
+		if (++tryCount == 100) {
+			INVALID_CODE_PATH("Failed to copy game.dll");
+		}
+		Sleep(100);
+	}
+
+	game.lastWriteTime = getLastWriteTime("game.dll");
+
+	auto tryLoad = [&]() {
+		game.library = LoadLibraryA("_game.dll");
+		return game.library != 0;
+	};
+
+	tryCount = 0;
+	while (!tryLoad()) {
+		if (++tryCount == 100) {
+			INVALID_CODE_PATH("Failed to load _game.dll");
+		}
+		Sleep(100);
+	}
+
+	bool success = true;
+	char errorMessage[1024];
+	auto getProcAddress = [&](auto &dst, char const *name) {
+		auto result = GetProcAddress(game.library, name);
+		if (result) {
+			dst = (decltype(dst))result;
+		} else {
+			success = false;
+			sprintf(errorMessage, "Function %s not found in game.dll\n", name);
+		}
+	};
+
+	getProcAddress(game.fillStartInfo, "fillStartInfo");
+	getProcAddress(game._init, "init");
+	getProcAddress(game._start, "start");
+	getProcAddress(game._debugStart, "debugStart");
+	getProcAddress(game._debugReload, "debugReload");
+	getProcAddress(game._update, "update");
+	getProcAddress(game._debugUpdate, "debugUpdate");
+	getProcAddress(game._fillSoundBuffer, "fillSoundBuffer");
+	getProcAddress(game._shutdown, "shutdown");
+
+	if (!success) {
+		printf("%s", errorMessage);
+		INVALID_CODE_PATH("game api is missing");
+	}
+}
+void unloadGame(Win32Game &game) {
+	FreeLibrary(game.library);
+	DeleteFileA("_game.dll");
+}
+void checkUpdate(Win32Game &game) {
+	auto newTime = getLastWriteTime("game.dll");
+	if (CompareFileTime(&newTime, &game.lastWriteTime) == 1) {
+		game.mutex.lock();
+		unloadGame(game);
+		loadGame(game);
+		game.mutex.unlock();
+		game.debugReload();
+	}
 }
 
 #include <dsound.h>
@@ -193,12 +381,13 @@ struct Win32Audio final : Audio {
 	static constexpr u32 numChannels = 2;
 	static constexpr u32 bytesPerSample = sizeof(s16) * numChannels;
 
+	bool volatile initialized = false;
 	LPDIRECTSOUNDBUFFER soundBuffer;
 	u32 runningSampleIndex;
 	u32 soundBufferSize;
 	DWORD lastPlayCursor;
 
-	void fillSoundBuffer(GameState& game, DWORD ByteToLock, DWORD BytesToWrite) {
+	void fillSoundBuffer(Win32Game &game, DWORD ByteToLock, DWORD BytesToWrite) {
 		void* Region1;
 		void* Region2;
 		DWORD Region1Size;
@@ -210,16 +399,25 @@ struct Win32Audio final : Audio {
 		DWORD Region1SampleCount = Region1Size / bytesPerSample;
 		DWORD Region2SampleCount = Region2Size / bytesPerSample;
 
-		if (Region1SampleCount) GameAPI::fillSoundBuffer(game, *this, (s16*)Region1, Region1SampleCount);
-		if (Region2SampleCount) GameAPI::fillSoundBuffer(game, *this, (s16*)Region2, Region2SampleCount);
+		if (Region1SampleCount) game.fillSoundBuffer(*this, (s16*)Region1, Region1SampleCount);
+		if (Region2SampleCount) game.fillSoundBuffer(*this, (s16*)Region2, Region2SampleCount);
 
 		runningSampleIndex += Region1SampleCount + Region2SampleCount;
 
 		DHR(soundBuffer->Unlock(Region1, Region1Size, Region2, Region2Size));
 	}
-	void fillFrame(GameState& game) {
-		auto latencySampleCount = sampleRate / 12;
+	void fillFrame(Win32Game &game/*, Time const &time*/) {
+		PROFILE_FUNCTION;
+		auto latencySampleCount = sampleRate * syncIntervalMS / 150;
+
 		u32 ByteToLock = (runningSampleIndex * bytesPerSample) % soundBufferSize;
+
+		//u32 expectedBytesPerFrame = (u32)(sampleRate * bytesPerSample * time.targetFrameTime);
+		//f32 secondsUntilFlip = time.targetFrameTime - fromBeginToAudioSeconds;
+		//u32 expectedBytesUntilFlip = (u32)((secondsUntilFlip / time.targetFrameTime) * (f32)expectedBytesPerFrame);
+		//u32 expectedFrameBoundaryByte = playCursor + expectedBytesUntilFlip;
+		//u32 safeWriteCursor = writeCursor;
+
 		u32 TargetCursor = (lastPlayCursor + latencySampleCount * bytesPerSample) % soundBufferSize;
 		u32 BytesToWrite;
 		if (ByteToLock > TargetCursor) {
@@ -238,6 +436,7 @@ Win32Audio createAudio(HWND hwnd) {
 
 	Win32Audio result;
 
+	result.syncIntervalMS = 15;
 	result.lastPlayCursor = 0;
 	result.runningSampleIndex = 0;
 	result.sampleRate = 48000;
@@ -272,6 +471,8 @@ Win32Audio createAudio(HWND hwnd) {
 	desc.lpwfxFormat = &wfx;
 
 	DHR(dsound->CreateSoundBuffer(&desc, &result.soundBuffer, 0));
+
+	result.initialized = true;
 
 	return result;
 }
@@ -320,115 +521,119 @@ Renderer createRenderer(RenderingApi renderingApi, Window &window, u32 sampleCou
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 	try {
-		Profiler::reset();
-		resetThreadStats();
-		PROFILE_BEGIN("mainStartup");
+		PROFILE_BEGIN("AllocConsole");
+		AllocConsole();
+		freopen("CONOUT$", "w", stdout);
+		PROFILE_END;
+		
+		Win32Game game;
+		loadGame(game);
+		DEFER { unloadGame(game); };
 
 		StartInfo startInfo{};
 		startInfo.clientSize = {1600, 900};
 		startInfo.resizeable = true;
 		startInfo.renderingApi = RenderingApi::d3d11;
 		startInfo.sampleCount = 1;
-		startInfo.workerThreadCount = cpuInfo.logicalProcessorCount;
+		startInfo.workerThreadCount = cpuInfo.logicalProcessorCount - 1;
 
-		GameAPI::fillStartInfo(startInfo);
+		game.fillStartInfo(startInfo);
 
 		initWorkerThreads(startInfo.workerThreadCount);
-
-#if 0
-		WorkQueue testWork;
-		for(u32 i=0;i<1000;++i){
-			testWork.push("test", []{
-				PROFILE_FUNCTION;
-				puts("Hello!");
-			});
-		}
-		testWork.completeAllWork();
-#endif
+		DEFER { shutdownWorkerThreads(); };
+		
+		Profiler::init(startInfo.workerThreadCount + 1);
+		PROFILE_BEGIN("mainStartup");
 
 		WorkQueue workQueue{};
 
-		PROFILE_BEGIN("AllocConsole");
-		AllocConsole();
-		freopen("CONOUT$", "w", stdout);
-		PROFILE_END;
-
-		Win32Window window;
-		initWindow(window, instance, startInfo.clientSize, startInfo.resizeable);
-		DEFER { destroyWindow(window); };
-		
-		Renderer renderer;
-		workQueue.push("createRenderer", [&] {
-			renderer = createRenderer(startInfo.renderingApi, window, startInfo.sampleCount);
-		});
-		DEFER { renderer.shutdown(); };
-
-		Win32Audio win32Audio;
-		workQueue.push("createAudio", [&] {
-			win32Audio = createAudio((HWND)window.handle);
+		workQueue.push([&]{
+			game.init();			   
 		});
 
-		Input input;
-		workQueue.push("createInput", [&] {
+		Win32Input input;
+		workQueue.push([&] {
 			input = createInput();
 		});
 
+		Win32Window window;
+		initWindow(window, instance, startInfo.clientSize, startInfo.resizeable);
+
+		Renderer renderer;
+		workQueue.push([&] {
+			renderer = createRenderer(startInfo.renderingApi, window, startInfo.sampleCount);
+		});
+
+		SyncPoint playAudioSyncPoint{2};
+		
+		Win32Audio win32Audio;
+		std::thread audioThread([&] {
+			win32Audio = createAudio((HWND)window.handle);
+			sync(playAudioSyncPoint);
+			DHR(win32Audio.soundBuffer->Play(0, 0, DSBPLAY_LOOPING));
+			s64 lastPerfCounter = PerfTimer::getCounter();
+			while (window.open) {
+				game.mutex.lock();
+				win32Audio.fillFrame(game);
+				game.mutex.unlock();
+
+				DWORD PlayCursor;
+				DWORD WriteCursor;
+				DHR(win32Audio.soundBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor));
+
+				win32Audio.lastPlayCursor = PlayCursor;
+
+				lastPerfCounter = PerfTimer::syncWithTime(lastPerfCounter, win32Audio.syncIntervalMS * 0.001f);
+			}
+		});
+		DEFER { audioThread.join(); };
+		
 		workQueue.completeAllWork();
 
+		SetForegroundWindow((HWND)window.handle);
+
+		DEFER { destroyWindow(window); };
+		DEFER { renderer.shutdown(); };
+
 		PROFILE_END;
-
-		Profiler::prepareStats();
-
-		GameState *game = GameAPI::start(window, renderer);
-		if (!game)
-			return -1;
-		DEFER { GameAPI::shutdown(*game); };
 		
-		//win32Audio.fillSoundBuffer(*game, 0, win32Audio.soundBufferSize);
-		DHR(win32Audio.soundBuffer->Play(0, 0, DSBPLAY_LOOPING));
-
-		ShowCursor(false);
-
 		Time time;
 
 		time.frameCount = 0;
-		time.targetFrameTime = 0.016666666f;
-		time.delta = time.targetFrameTime;
+		time.targetDelta = 0.016666666f;
 		time.time = 0.f;
+
+		game.start(window, renderer, input, time);
+		DEFER { game.shutdown(); };
+		
+		game.debugStart(window, renderer, input, time, Profiler::getStats());
+		
+		time.delta = time.targetDelta;
+
+		//win32Audio.fillSoundBuffer(*game, 0, win32Audio.soundBufferSize);
+
+		sync(playAudioSyncPoint);
 
 		s64 lastPerfCounter = PerfTimer::getCounter();
 		while (window.open) {
 			Profiler::reset();
-			resetThreadStats();
+
+			checkUpdate(game);
 
 			processMessages(window, input);
 			if (window.resized) {
-				input.reset();
+				reset(input);
 				renderer.resize(window.clientSize);
 			}
-			renderer.prepare();
 
-			GameAPI::update(*game, window, renderer, input, time);
+			game.update(window, renderer, input, time);
 			
-			win32Audio.fillFrame(*game);
-
 			finalizeFrame(window, lastPerfCounter, time);
 
-			Profiler::prepareStats();
-
-			GameAPI::endFrame(*game, window, renderer, input, time);
+			game.debugUpdate(window, renderer, input, time, Profiler::getStats());
 			
 			renderer.present();
-
-			DWORD PlayCursor;
-			DWORD WriteCursor;
-			DHR(win32Audio.soundBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor));
-
-			win32Audio.lastPlayCursor = PlayCursor;
 		}
-
-		shutdownWorkerThreads();
-
 		return 0;
 	} catch (std::runtime_error &e) {
 		MessageBoxA(0, e.what(), "std::runtime_error", MB_OK);

@@ -1,65 +1,42 @@
 #include "common.h"
+#include "common.h"
+#include "common_internal.h"
 #include "../dep/tl/include/tl/thread.h"
+
+#include <unordered_map>
 
 #pragma warning(push, 0)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#pragma push_macro("OS_WINDOWS")
+#include <Shlwapi.h>
+#pragma pop_macro("OS_WINDOWS")
 #include <strsafe.h>
 
 #include <array>
 #include <queue>
 #include <stack>
+
+#pragma comment(lib, "shlwapi")
 #pragma warning(pop)
 
-template <class T, class... Args>
-void construct(T &val, Args &&... args) {
-	new (&val) decltype(val)(std::forward<Args>(args)...);
-}
-
-template <class T>
-void destruct(T &val) {
-	val.~T();
-}
-
-template <class Pred>
-void spinlock(Pred pred, bool volatile *stop = 0) {
-	u32 miss = 0;
-	while (stop ? !*stop : true) {
-		if (pred()) {
-			break;
-		}
-		++miss;
-		if (miss >= 64) {
-			SwitchToThread();
-		} else if (miss >= 16) {
-			_mm_pause();
-		}
-	}
-}
-
-static void (*pushWorkImpl)(WorkQueue *queue, void (*fn)(void *), void *param, char const *name);
+static void (*pushWorkImpl)(WorkQueue *queue, void (*fn)(void *), void *param);
 static void (*waitForWorkCompletionImpl)(WorkQueue *);
 
-static ThreadStats threadStats;
-void resetThreadStats() {
-	for (auto &stat : threadStats)
-		stat.clear();
-}
-ThreadStats &getThreadStats() { return threadStats; }
-
-void doWork(u32 threadIndex, void (*fn)(void *), void *param, char const *name, WorkQueue *queue) {
-	WorkStat stat;
-	stat.workName = name;
-	stat.startCycle = __rdtsc();
+static void doWork(void (*fn)(void *), void *param, WorkQueue *queue) {
 	fn(param);
-	stat.endCycle = __rdtsc();
-	threadStats[threadIndex].push_back(stat);
 	InterlockedDecrement(&queue->workToDo);
 }
 
-struct SPMC_WorkQueue {
+struct WorkEntry {
+	WorkQueue *queue;
+	void (*function)(void *param);
+	void *param;
+};
+
+struct SharedWorkQueue {
 	std::queue<WorkEntry> queue;
 	std::mutex mutex;
 	void push(WorkEntry &&val) {
@@ -67,7 +44,7 @@ struct SPMC_WorkQueue {
 		queue.push(std::move(val));
 		mutex.unlock();
 	}
-	auto pop() {
+	auto try_pop() {
 		std::optional<WorkEntry> entry;
 		mutex.lock();
 		if (queue.size()) {
@@ -79,76 +56,62 @@ struct SPMC_WorkQueue {
 	}
 };
 
-struct GlobalWorkQueue {
-	SPSC::CircularQueue<WorkEntry, 1024> single;
-	SPMC_WorkQueue multi;
-};
-
-static GlobalWorkQueue globalWorkQueue;
+static SharedWorkQueue sharedWorkQueue;
 static u32 workerCount = 0;
 static bool volatile stopWork = false;
 static u32 volatile deadWorkers = 0;
-void initWorkerThreads(u32 count) {
-	PROFILE_FUNCTION;
-	workerCount = count;
-	threadStats.resize(max(count + 1u, 1u));
-	if (count == 0) {
-		pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) { doWork(0, fn, param, name, queue); };
+static u32 volatile initializedWorkers = 0;
+static std::unordered_map<DWORD, u32> threadIdMap;
+static bool tryDoWork() {
+	if (auto entry = sharedWorkQueue.try_pop()) {
+		doWork(entry->function, entry->param, entry->queue);
+		return true;
+	}
+	return false;
+}
+void initWorkerThreads(u32 threadCount) {
+	workerCount = threadCount;
+	threadIdMap[GetCurrentThreadId()] = 0;
+	if (threadCount == 0) {
+		pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param) { doWork(fn, param, queue); };
 		waitForWorkCompletionImpl = [](WorkQueue *queue) {};
 	} else {
-		waitForWorkCompletionImpl = [](WorkQueue *queue) { spinlock([queue] { return queue->completed(); }); };
-		if (count == 1) {
-			std::thread([]() {
+		waitForWorkCompletionImpl = [](WorkQueue *queue) { 
+			waitUntil([queue] { 
+				tryDoWork();
+				return queue->completed(); 
+			}); 
+		};
+		std::mutex threadIdMapMutex;
+		for (u32 threadIndex = 0; threadIndex < threadCount; ++threadIndex) {
+			std::thread([&threadIdMapMutex, threadIndex]() {
+				threadIdMapMutex.lock();
+				threadIdMap[GetCurrentThreadId()] = threadIndex + 1;
+				threadIdMapMutex.unlock();
+				InterlockedIncrement(&initializedWorkers);
 				for (;;) {
-					spinlock(
-						[] {
-							if (auto entry = globalWorkQueue.single.pop()) {
-								doWork(1, entry->function, entry->param, entry->name, entry->queue);
-								return true;
-							}
-							return false;
-						},
-						&stopWork);
+					waitUntil([]{ return tryDoWork() || stopWork; });
 					if (stopWork)
 						break;
 				}
 				InterlockedIncrement(&deadWorkers);
 			}).detach();
-			pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) {
-				globalWorkQueue.single.push({queue, fn, param, name});
-				InterlockedIncrement(&queue->workToDo);
-			};
-		} else {
-			for (u32 i = 0; i < count; ++i) {
-				std::thread([i=i+1]() {
-					for (;;) {
-						spinlock(
-							[i] {
-								if (auto entry = globalWorkQueue.multi.pop()) {
-									doWork(i, entry->function, entry->param, entry->name, entry->queue);
-									return true;
-								}
-								return false;
-							},
-							&stopWork);
-						if (stopWork)
-							break;
-					}
-					InterlockedIncrement(&deadWorkers);
-				}).detach();
-			}
-			pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param, char const *name) {
-				globalWorkQueue.multi.push({queue, fn, param, name});
-				InterlockedIncrement(&queue->workToDo);
-			};
 		}
+		pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param) {
+			sharedWorkQueue.push({queue, fn, param});
+			InterlockedIncrement(&queue->workToDo);
+		};
 	}
+	waitUntil([threadCount] { return initializedWorkers == threadCount; });
 }
 void shutdownWorkerThreads() {
 	stopWork = true;
-	spinlock([] { return deadWorkers == workerCount; });
+	waitUntil([] { return deadWorkers == workerCount; });
 }
-void WorkQueue::push_(char const *name, void (*fn)(void *), void *param) { return pushWorkImpl(this, fn, param, name); }
+u32 getWorkerThreadCount() {
+	return workerCount;
+}
+void WorkQueue::push_(void (*fn)(void *), void *param) { return pushWorkImpl(this, fn, param); }
 void WorkQueue::completeAllWork() { return waitForWorkCompletionImpl(this); }
 bool WorkQueue::completed() {
 	return workToDo == 0;
@@ -159,8 +122,39 @@ struct CPUID {
 	s32 ebx;
 	s32 ecx;
 	s32 edx;
-	operator s32 *() { return &eax; }
+	
+	CPUID(s32 func) {
+		__cpuid(data(), func);
+	}
+
+	CPUID(s32 func, s32 subfunc) {
+		__cpuidex(data(), func, subfunc);
+	}
+
+	s32 *data() { return &eax; }
 };
+
+CacheType cvt(PROCESSOR_CACHE_TYPE v) {
+	switch (v) {
+		case PROCESSOR_CACHE_TYPE::CacheUnified:	 return CacheType::unified;
+		case PROCESSOR_CACHE_TYPE::CacheInstruction: return CacheType::instruction;
+		case PROCESSOR_CACHE_TYPE::CacheData:		 return CacheType::data;
+		case PROCESSOR_CACHE_TYPE::CacheTrace:		 return CacheType::trace;
+		default: INVALID_CODE_PATH();
+	}
+}
+
+char const *toString(CacheType v) {
+#define CASE(name) case CacheType::name: return #name;
+	switch (v) {
+		CASE(data)
+		CASE(instruction)
+		CASE(trace)
+		CASE(unified)
+		default: return "Unknown";
+	}
+#undef CASE
+}
 
 static CpuInfo getCpuInfo() {
 	CpuInfo result{};
@@ -170,166 +164,154 @@ static CpuInfo getCpuInfo() {
 		DWORD err = GetLastError();
 		ASSERT(err == ERROR_INSUFFICIENT_BUFFER, "GetLastError(): %u", err);
 	}
+
 	auto buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)malloc(processorInfoLength);
 	DEFER { free(buffer); };
+
 	if (!GetLogicalProcessorInformation(buffer, &processorInfoLength))
 		INVALID_CODE_PATH("GetLogicalProcessorInformation: %u", GetLastError());
 
-	ASSERT(processorInfoLength % sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) == 0);
-	for (auto &info : Span{buffer, processorInfoLength / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION)}) {
+	ASSERT(processorInfoLength % sizeof(buffer[0]) == 0);
+	for (auto &info : Span{buffer, processorInfoLength / sizeof(buffer[0])}) {
 		switch (info.Relationship) {
 			case RelationNumaNode:
 			case RelationProcessorPackage: break;
 			case RelationProcessorCore: result.logicalProcessorCount += countBits(info.ProcessorMask); break;
-
-			case RelationCache:
-				if (info.Cache.Level == 1) {
-					result.cacheL1++;
-				} else if (info.Cache.Level == 2) {
-					result.cacheL2++;
-				} else if (info.Cache.Level == 3) {
-					result.cacheL3++;
-				}
+			case RelationCache: {
+				auto &cache = result.cache[info.Cache.Level - 1][(u8)cvt(info.Cache.Type)];
+				cache.size += info.Cache.Size; 
+				++cache.count;
+				result.cacheLineSize = info.Cache.LineSize;
 				break;
-
+			}
 			default: INVALID_CODE_PATH("Error: Unsupported LOGICAL_PROCESSOR_RELATIONSHIP value.");
 		}
 	}
 
-	CpuVendor vendor{};
-	char vendorName[25];
-	s32 ECX_1 = 0;
-	s32 EDX_1 = 0;
-	s32 EBX_7 = 0;
-	s32 ECX_7 = 0;
-	s32 ECX_e1 = 0;
-	s32 EDX_e1 = 0;
-	std::vector<CPUID> data;
-	std::vector<CPUID> extdata;
-
-	CPUID cpui{};
+	s32 ecx1 = 0;
+	s32 edx1 = 0;
+	s32 ebx7 = 0;
+	s32 ecx7 = 0;
+	s32 ecx1ex = 0;
+	s32 edx1ex = 0;
+	StaticList<CPUID, 64> data;
+	StaticList<CPUID, 64> dataEx;
 
 	// Calling __cpuid with 0x0 as the function_id argument
 	// gets the number of the highest valid function ID.
-	__cpuid(cpui, 0);
-	int nIds = cpui.eax;
-	data.reserve((umm)nIds);
+	s32 nIds = CPUID(0).eax;
+	//data.reserve((umm)nIds);
 
-	for (int i = 0; i <= nIds; ++i) {
-		__cpuidex(cpui, i, 0);
-		data.push_back(cpui);
+	for (s32 i = 0; i <= nIds; ++i) {
+		data.push_back(CPUID(i, 0));
 	}
 
 	ASSERT(data.size() > 0);
 
-	// Capture vendor string
-	((int *)vendorName)[0] = data[0][1];
-	((int *)vendorName)[1] = data[0][3];
-	((int *)vendorName)[2] = data[0][2];
-	vendorName[24] = '\0';
-	if (strcmp(vendorName, "GenuineIntel") == 0) {
-		vendor = CpuVendor::Intel;
-	} else if (strcmp(vendorName, "AuthenticAMD") == 0) {
-		vendor = CpuVendor::AMD;
+	char vendorName[24];
+	((s32 *)vendorName)[0] = data[0].ebx;
+	((s32 *)vendorName)[1] = data[0].edx;
+	((s32 *)vendorName)[2] = data[0].ecx;
+	if (startsWith(vendorName, 24, "GenuineIntel")) {
+		result.vendor = CpuVendor::Intel;
+	} else if (startsWith(vendorName, 24, "AuthenticAMD")) {
+		result.vendor = CpuVendor::AMD;
 	}
-	result.vendor = vendor;
 
 	// load bitset with flags for function 0x00000001
 	if (nIds >= 1) {
-		ECX_1 = data[1][2];
-		EDX_1 = data[1][3];
+		ecx1 = data[1].ecx;
+		edx1 = data[1].edx;
 	}
 
 	// load bitset with flags for function 0x00000007
 	if (nIds >= 7) {
-		EBX_7 = data[7][1];
-		ECX_7 = data[7][2];
+		ebx7 = data[7].ebx;
+		ecx7 = data[7].ecx;
 	}
 
 	// Calling __cpuid with 0x80000000 as the function_id argument
 	// gets the number of the highest valid extended ID.
-	__cpuid(cpui, 0x80000000);
-	int nExIds_ = cpui[0];
+	s32 nExIds_ = CPUID(0x80000000).eax;
 
-	for (int i = 0x80000000; i <= nExIds_; ++i) {
-		__cpuidex(cpui, i, 0);
-		extdata.push_back(cpui);
+	for (s32 i = 0x80000000; i <= nExIds_; ++i) {
+		dataEx.push_back(CPUID(i, 0));
 	}
 
 	// load bitset with flags for function 0x80000001
 	if (nExIds_ >= 0x80000001) {
-		ECX_e1 = extdata[1][2];
-		EDX_e1 = extdata[1][3];
+		ecx1ex = dataEx[1].ecx;
+		edx1ex = dataEx[1].edx;
 	}
 
 	// Interpret CPU brand string if reported
 	if (nExIds_ >= 0x80000004) {
-		char *brand = (char *)malloc(49);
-		brand[48] = 0;
-		memcpy(brand + sizeof(cpui) * 0, extdata[2], sizeof(cpui));
-		memcpy(brand + sizeof(cpui) * 1, extdata[3], sizeof(cpui));
-		memcpy(brand + sizeof(cpui) * 2, extdata[4], sizeof(cpui));
-		result.brand = brand;
+		result.brand[48] = 0;
+		memcpy(result.brand + sizeof(CPUID) * 0, dataEx[2].data(), sizeof(CPUID));
+		memcpy(result.brand + sizeof(CPUID) * 1, dataEx[3].data(), sizeof(CPUID));
+		memcpy(result.brand + sizeof(CPUID) * 2, dataEx[4].data(), sizeof(CPUID));
+	} else {
+		result.brand[0] = 0;
 	}
 
 	auto set = [&](ProcessorFeature feature, bool value) {
-		u32 index, slot = cpuInfo.getFeaturePos(feature, index);
-		result.features[slot] |= (u32)value << index;
+		CpuInfo::FeatureIndex index = cpuInfo.getFeaturePos(feature);
+		result.features[index.slot] |= (u32)value << index.bit;
 	};
 
 	// clang-format off
-	set(ProcessorFeature::SSE3,			(ECX_1	& (1 << 0 )));
-    set(ProcessorFeature::PCLMULQDQ,	(ECX_1	& (1 << 1 )));
-    set(ProcessorFeature::MONITOR,		(ECX_1	& (1 << 3 )));
-    set(ProcessorFeature::SSSE3,		(ECX_1	& (1 << 9 )));
-    set(ProcessorFeature::FMA,			(ECX_1	& (1 << 12)));
-    set(ProcessorFeature::CMPXCHG16B,	(ECX_1	& (1 << 13)));
-    set(ProcessorFeature::SSE41,		(ECX_1	& (1 << 19)));
-    set(ProcessorFeature::SSE42,		(ECX_1	& (1 << 20)));
-    set(ProcessorFeature::MOVBE,		(ECX_1	& (1 << 22)));
-    set(ProcessorFeature::POPCNT,		(ECX_1	& (1 << 23)));
-    set(ProcessorFeature::AES,			(ECX_1	& (1 << 25)));
-    set(ProcessorFeature::XSAVE,		(ECX_1	& (1 << 26)));
-    set(ProcessorFeature::OSXSAVE,		(ECX_1	& (1 << 27)));
-    set(ProcessorFeature::AVX,			(ECX_1	& (1 << 28)));
-    set(ProcessorFeature::F16C,			(ECX_1	& (1 << 29)));
-    set(ProcessorFeature::RDRAND,		(ECX_1	& (1 << 30)));
-    set(ProcessorFeature::MSR,			(EDX_1	& (1 << 5 )));
-    set(ProcessorFeature::CX8,			(EDX_1	& (1 << 8 )));
-    set(ProcessorFeature::SEP,			(EDX_1	& (1 << 11)));
-    set(ProcessorFeature::CMOV,			(EDX_1	& (1 << 15)));
-    set(ProcessorFeature::CLFSH,		(EDX_1	& (1 << 19)));
-    set(ProcessorFeature::MMX,			(EDX_1	& (1 << 23)));
-    set(ProcessorFeature::FXSR,			(EDX_1	& (1 << 24)));
-    set(ProcessorFeature::SSE,			(EDX_1	& (1 << 25)));
-    set(ProcessorFeature::SSE2,			(EDX_1	& (1 << 26)));
-    set(ProcessorFeature::FSGSBASE,		(EBX_7	& (1 << 0 )));
-    set(ProcessorFeature::BMI1,			(EBX_7	& (1 << 3 )));
-    set(ProcessorFeature::HLE,			(EBX_7	& (1 << 4 )) && vendor == CpuVendor::Intel);
-    set(ProcessorFeature::AVX2,			(EBX_7	& (1 << 5 )));
-    set(ProcessorFeature::BMI2,			(EBX_7	& (1 << 8 )));
-    set(ProcessorFeature::ERMS,			(EBX_7	& (1 << 9 )));
-    set(ProcessorFeature::INVPCID,		(EBX_7	& (1 << 10)));
-    set(ProcessorFeature::RTM,			(EBX_7	& (1 << 11)) && vendor == CpuVendor::Intel);
-    set(ProcessorFeature::AVX512F,		(EBX_7	& (1 << 16)));
-    set(ProcessorFeature::RDSEED,		(EBX_7	& (1 << 18)));
-    set(ProcessorFeature::ADX,			(EBX_7	& (1 << 19)));
-    set(ProcessorFeature::AVX512PF,		(EBX_7	& (1 << 26)));
-    set(ProcessorFeature::AVX512ER,		(EBX_7	& (1 << 27)));
-    set(ProcessorFeature::AVX512CD,		(EBX_7	& (1 << 28)));
-    set(ProcessorFeature::SHA,			(EBX_7	& (1 << 29)));
-    set(ProcessorFeature::PREFETCHWT1,  (ECX_7	& (1 << 0 )));
-    set(ProcessorFeature::LAHF,			(ECX_e1	& (1 << 0 )));
-    set(ProcessorFeature::LZCNT,		(ECX_e1	& (1 << 5 )) && vendor == CpuVendor::Intel);
-    set(ProcessorFeature::ABM,			(ECX_e1	& (1 << 5 )) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::SSE4a,		(ECX_e1	& (1 << 6 )) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::XOP,			(ECX_e1	& (1 << 11)) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::TBM,			(ECX_e1	& (1 << 21)) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::SYSCALL,		(EDX_e1	& (1 << 11)) && vendor == CpuVendor::Intel);
-    set(ProcessorFeature::MMXEXT,		(EDX_e1	& (1 << 22)) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::RDTSCP,		(EDX_e1	& (1 << 27)) && vendor == CpuVendor::Intel);
-    set(ProcessorFeature::_3DNOWEXT,	(EDX_e1	& (1 << 30)) && vendor == CpuVendor::AMD);
-    set(ProcessorFeature::_3DNOW,		(EDX_e1	& (1 << 31)) && vendor == CpuVendor::AMD);
+	set(ProcessorFeature::SSE3,			(ecx1	& (1 << 0 )));
+    set(ProcessorFeature::PCLMULQDQ,	(ecx1	& (1 << 1 )));
+    set(ProcessorFeature::MONITOR,		(ecx1	& (1 << 3 )));
+    set(ProcessorFeature::SSSE3,		(ecx1	& (1 << 9 )));
+    set(ProcessorFeature::FMA,			(ecx1	& (1 << 12)));
+    set(ProcessorFeature::CMPXCHG16B,	(ecx1	& (1 << 13)));
+    set(ProcessorFeature::SSE41,		(ecx1	& (1 << 19)));
+    set(ProcessorFeature::SSE42,		(ecx1	& (1 << 20)));
+    set(ProcessorFeature::MOVBE,		(ecx1	& (1 << 22)));
+    set(ProcessorFeature::POPCNT,		(ecx1	& (1 << 23)));
+    set(ProcessorFeature::AES,			(ecx1	& (1 << 25)));
+    set(ProcessorFeature::XSAVE,		(ecx1	& (1 << 26)));
+    set(ProcessorFeature::OSXSAVE,		(ecx1	& (1 << 27)));
+    set(ProcessorFeature::AVX,			(ecx1	& (1 << 28)));
+    set(ProcessorFeature::F16C,			(ecx1	& (1 << 29)));
+    set(ProcessorFeature::RDRAND,		(ecx1	& (1 << 30)));
+    set(ProcessorFeature::MSR,			(edx1	& (1 << 5 )));
+    set(ProcessorFeature::CX8,			(edx1	& (1 << 8 )));
+    set(ProcessorFeature::SEP,			(edx1	& (1 << 11)));
+    set(ProcessorFeature::CMOV,			(edx1	& (1 << 15)));
+    set(ProcessorFeature::CLFSH,		(edx1	& (1 << 19)));
+    set(ProcessorFeature::MMX,			(edx1	& (1 << 23)));
+    set(ProcessorFeature::FXSR,			(edx1	& (1 << 24)));
+    set(ProcessorFeature::SSE,			(edx1	& (1 << 25)));
+    set(ProcessorFeature::SSE2,			(edx1	& (1 << 26)));
+    set(ProcessorFeature::FSGSBASE,		(ebx7	& (1 << 0 )));
+    set(ProcessorFeature::BMI1,			(ebx7	& (1 << 3 )));
+    set(ProcessorFeature::HLE,			(ebx7	& (1 << 4 )) && result.vendor == CpuVendor::Intel);
+    set(ProcessorFeature::AVX2,			(ebx7	& (1 << 5 )));
+    set(ProcessorFeature::BMI2,			(ebx7	& (1 << 8 )));
+    set(ProcessorFeature::ERMS,			(ebx7	& (1 << 9 )));
+    set(ProcessorFeature::INVPCID,		(ebx7	& (1 << 10)));
+    set(ProcessorFeature::RTM,			(ebx7	& (1 << 11)) && result.vendor == CpuVendor::Intel);
+    set(ProcessorFeature::AVX512F,		(ebx7	& (1 << 16)));
+    set(ProcessorFeature::RDSEED,		(ebx7	& (1 << 18)));
+    set(ProcessorFeature::ADX,			(ebx7	& (1 << 19)));
+    set(ProcessorFeature::AVX512PF,		(ebx7	& (1 << 26)));
+    set(ProcessorFeature::AVX512ER,		(ebx7	& (1 << 27)));
+    set(ProcessorFeature::AVX512CD,		(ebx7	& (1 << 28)));
+    set(ProcessorFeature::SHA,			(ebx7	& (1 << 29)));
+    set(ProcessorFeature::PREFETCHWT1,  (ecx7	& (1 << 0 )));
+    set(ProcessorFeature::LAHF,			(ecx1ex	& (1 << 0 )));
+    set(ProcessorFeature::LZCNT,		(ecx1ex	& (1 << 5 )) && result.vendor == CpuVendor::Intel);
+    set(ProcessorFeature::ABM,			(ecx1ex	& (1 << 5 )) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::SSE4a,		(ecx1ex	& (1 << 6 )) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::XOP,			(ecx1ex	& (1 << 11)) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::TBM,			(ecx1ex	& (1 << 21)) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::SYSCALL,		(edx1ex	& (1 << 11)) && result.vendor == CpuVendor::Intel);
+    set(ProcessorFeature::MMXEXT,		(edx1ex	& (1 << 22)) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::RDTSCP,		(edx1ex	& (1 << 27)) && result.vendor == CpuVendor::Intel);
+    set(ProcessorFeature::_3DNOWEXT,	(edx1ex	& (1 << 30)) && result.vendor == CpuVendor::AMD);
+    set(ProcessorFeature::_3DNOW,		(edx1ex	& (1 << 31)) && result.vendor == CpuVendor::AMD);
 	// clang-format on
 
 	return result;
@@ -414,6 +396,23 @@ s64 PerfTimer::getCounter() {
 	LARGE_INTEGER counter;
 	QueryPerformanceCounter(&counter);
 	return counter.QuadPart;
+}
+s64 PerfTimer::syncWithTime(s64 beginPC, f32 duration) {
+	s64 endCounter = PerfTimer::getCounter();
+	auto secondsElapsed = PerfTimer::getSeconds(beginPC, endCounter);
+	if (secondsElapsed < duration) {
+		s32 msToSleep = (s32)((duration - secondsElapsed) * 1000.0f);
+		if (msToSleep > 0) {
+			Sleep((DWORD)msToSleep);
+		}
+		auto targetCounter = beginPC + s64(duration * PerfTimer::frequency);
+		while (1) {
+			endCounter = PerfTimer::getCounter();
+			if (endCounter >= targetCounter)
+				break;
+		}
+	}
+	return endCounter;
 }
 #else
 #error no timer
@@ -509,122 +508,94 @@ READ_FILE(wchar, CreateFileW);
 
 void freeEntireFile(StringSpan file) { free(file.begin()); }
 
-#if 0
-namespace Profiler {
-HANDLE thread;
-SPSC::CircularQueue<Entry, 256> entries;
-bool volatile stopped;
-void push(Entry e) {
-	e.end = PerfTimer::getCounter();
-	entries.push(e);
+bool fileExists(char const* path) {
+	return PathFileExistsA(path);
 }
-void init() {
-	thread = CreateThread(
-		0, 0,
-		[](void*) -> DWORD {
-			HANDLE file = CreateFileA("profile.json", GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
-			ASSERT(file != INVALID_HANDLE_VALUE);
-			char const* header = R"({"otherData":{},"traceEvents":[)";
-			writeFile(file, header, strlen(header));
 
-			for (;;) {
-				if (auto e = entries.pop(); e.has_value()) {
-					s64 end = e->end;
-					s64 begin = e->begin;
-					s64 const usInSecond = 1000000;
-					begin = begin * usInSecond / PerfTimer::frequency;
-					end = end * usInSecond / PerfTimer::frequency;
-					char buffer[256];
-					ASSERT(StringCbPrintfA(
-							   buffer, _countof(buffer),
-							   R"({"cat":"function","dur":%lli,"name":"%s","ph":"X","pid":0,"tid":%u,"ts":%lli},)",
-							   end - begin, e->name, GetCurrentThreadId(), begin) == S_OK);
-					writeFile(file, buffer, strlen(buffer));
-					free(e->name);
-				} else if (stopped) {
-					break;
-				} else {
-					Sleep(1);
-				}
-			}
-			char const* footer = "]}";
-			setFilePointer(file, -1, SeekFrom::cursor);
-			writeFile(file, footer, strlen(footer));
-			CloseHandle(file);
-			return 0;
-		},
-		0, 0, 0);
-	ASSERT(thread);
-}
-void shutdown() {
-	stopped = true;
-	WaitForSingleObjectEx(thread, INFINITE, false);
-	CloseHandle(thread);
-}
-} // namespace Profiler
-#else
 namespace Profiler {
 #define MAX_PROFILER_ENTRY_COUNT 1024
 static Stats stats;
-static List<Entry> activeEntries;
+struct ThreadCallStack {
+	List<Stat> calls;
+};
+static List<ThreadCallStack> threadStacks;
 static std::mutex mutex;
-auto mainThreadId = std::this_thread::get_id();
+void init(u32 totalThreadCount) {
+	threadStacks.resize(totalThreadCount);
+	for (auto &stack : threadStacks)
+		stack.calls.reserve(512);
+	stats.entries.resize(totalThreadCount);
+	for (auto &l : stats.entries)
+		l.reserve(256);
+	stats.startUs = 
+	stats.totalUs = (u64)PerfTimer::getCounter();
+}
+u32 getThreadId() {
+	auto it = threadIdMap.find(GetCurrentThreadId());
+	if (it == threadIdMap.end())
+		return ~0u;
+	return it->second;
+}
+void start(char const *name) {
+	u32 threadId = getThreadId();
+	if (threadId == ~0)
+		return;
 
-ENG_API void createEntry(char const *name) {
-	Entry result;
+	Stat result;
+	result.depth = (u16)threadStacks[threadId].calls.size();
 	result.name = name;
-	result.selfCycles = 
-	result.startCycle =
-	result.totalCycles = __rdtsc();
+	result.selfUs = 
+	result.startUs =
+	result.totalUs = (u64)PerfTimer::getCounter();
 
 	std::scoped_lock _l(mutex);
-	activeEntries.push_back(result);
+	threadStacks[threadId].calls.push_back(std::move(result));
 }
-void addEntry() {
+void stop() {
+	u32 threadId = getThreadId();
+	if (threadId == ~0)
+		return;
 	std::scoped_lock _l(mutex);
 
-	auto e = activeEntries.back();
-	activeEntries.pop_back();
-	auto nowCy = __rdtsc();
-	e.selfCycles = nowCy - e.selfCycles;
-	e.totalCycles = nowCy - e.totalCycles;
-	for (auto &o : activeEntries) {
-		o.selfCycles += e.selfCycles;
+	Stat result = std::move(threadStacks[threadId].calls.back());
+	threadStacks[threadId].calls.pop_back();
+	auto nowNs = (u64)PerfTimer::getCounter();
+	result.selfUs = nowNs - result.selfUs;
+	result.totalUs = nowNs - result.totalUs;
+	for (auto &call : threadStacks[threadId].calls) {
+		call.selfUs += result.selfUs;
 	}
-	if (auto it = std::find_if(stats.entries.begin(), stats.entries.end(),
-							   [&](Entry n) { return strcmp(n.name, e.name) == 0; });
-		it != stats.entries.end()) {
-
-		it->selfCycles += e.selfCycles;
-		it->totalCycles += e.totalCycles;
-	} else {
-		stats.entries.push_back(e);
-	}
-
-	if (std::this_thread::get_id() == mainThreadId) {
-		WorkStat stat;
-		stat.workName = e.name;
-		stat.startCycle = e.startCycle;
-		stat.endCycle = e.startCycle + e.totalCycles;
-		threadStats[0].push_back(stat);
-	}
+	stats.entries[threadId].push_back(std::move(result));
 }
-void prepareStats() {
-	stats.totalCycles = __rdtsc() - stats.totalCycles;
-}
-Stats &getStats() {
+Stats getStats() {
+	for (auto &l : stats.entries) {
+		for (auto &stat : l) {
+			stat.startUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stat.startUs);
+			stat.totalUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stat.totalUs);
+			stat.selfUs = (u64)PerfTimer::getMicroseconds<f64> ((s64)stat.selfUs);
+		}
+	}
+	stats.startUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stats.startUs);
+	stats.totalUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stats.totalUs, PerfTimer::getCounter());
 	return stats;
 }
 void reset() {
-	stats.entries.clear();
-	stats.entries.reserve(256);
-	activeEntries.clear();
-	activeEntries.reserve(512);
-	stats.frameStartCycle = 
-	stats.totalCycles = __rdtsc();
+	for (auto &l : stats.entries)
+		l.clear();
+	for (auto &l : threadStacks)
+		l.calls.clear();
+	stats.startUs = 
+	stats.totalUs = (u64)PerfTimer::getCounter();
 }
 } // namespace Profiler
+
+void setCursorVisibility(bool visible) {
+	if (visible)
+		while (ShowCursor(visible) < 0);
+	else
+		while (ShowCursor(visible) >= 0);
+}
+
 namespace Log {
 void print(char const *msg) { puts(msg); }
 } // namespace Log
-#endif

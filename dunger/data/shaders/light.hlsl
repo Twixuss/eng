@@ -33,12 +33,11 @@ void main(in uint id : SV_VertexID, out v2p o){
 	o.position = float4(l.position + offsets[vertexIndex] * l.radius, 0, 1);
 }
 #elif defined COMPILE_PS
-float lenSqr(float2 a) { return dot(a,a); }
 float pow2(float v) { return v*v; }
 float pow3(float v) { return v*v*v; }
 float invpow2(float v) { return 1-pow2(1-v); }
 float4 main(in v2p i) : SV_Target {
 	//return float4(i.color/(lenSqr(i.uv)+1), 1);
-	return float4(pow3(max(0, 1-lenSqr(i.uv))) * i.color, 1);
+	return float4(pow3(max(0, 1-lengthSqr(i.uv))) * i.color, 1);
 }
 #endif

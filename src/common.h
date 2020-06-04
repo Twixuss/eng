@@ -23,13 +23,13 @@
 
 #if defined BUILD_ENG
 #define ENG_API	 __declspec(dllexport)
-#define GAME_API __declspec(dllimport)
+#define GAME_API extern "C" __declspec(dllimport)
 #elif defined BUILD_GAME
 #define ENG_API	 __declspec(dllimport)
-#define GAME_API __declspec(dllexport)
+#define GAME_API extern "C" __declspec(dllexport)
 #else
 #define ENG_API	 __declspec(dllimport)
-#define GAME_API __declspec(dllimport)
+#define GAME_API extern "C" __declspec(dllimport)
 #endif
 
 namespace Log {
@@ -56,6 +56,7 @@ void error(char const *format, T const &... args);
 					__VA_ARGS__)
 #include "../dep/tl/include/tl/common.h"
 #include "../dep/tl/include/tl/math.h"
+#include "../dep/tl/include/tl/thread.h"
 using namespace TL;
 
 #if COMPILER_MSVC
@@ -78,14 +79,6 @@ using namespace TL;
 #else
 #endif
 
-struct WorkStat {
-	char const *workName;
-	u64 startCycle;
-	u64 endCycle;
-	u64 cycles() const { return endCycle - startCycle; }
-};
-using ThreadStats = List<List<WorkStat>>;
-
 namespace Detail {
 template <class Tuple, size_t... indices>
 static void invoke(void *rawVals) noexcept {
@@ -105,29 +98,21 @@ struct ENG_API WorkQueue {
 	u32 volatile workToDo = 0;
 
 	template <class Fn, class... Args>
-	void push(char const *name, Fn &&fn, Args &&... args) {
+	void push(Fn &&fn, Args &&... args) {
 		using Tuple = std::tuple<std::decay_t<Fn>, std::decay_t<Args>...>;
 		auto fnParams = new Tuple(std::forward<Fn>(fn), std::forward<Args>(args)...);
 		constexpr auto invokerProc = Detail::getInvoke<Tuple>(std::make_index_sequence<1 + sizeof...(Args)>{});
 
-		push_(name, invokerProc, fnParams);
+		push_(invokerProc, fnParams);
 	}
-	void push_(char const *name, void (*fn)(void *), void *param);
+	void push_(void (*fn)(void *), void *param);
 	void completeAllWork();
 	bool completed();
 };
 
-struct WorkEntry {
-	WorkQueue *queue;
-	void (*function)(void *param);
-	void *param;
-	char const *name;
-};
-
 ENG_API void initWorkerThreads(u32 count);
 ENG_API void shutdownWorkerThreads();
-ENG_API ThreadStats &getThreadStats();
-ENG_API void resetThreadStats();
+ENG_API u32 getWorkerThreadCount();
 
 enum class ProcessorFeature {
 	_3DNOW,
@@ -189,22 +174,44 @@ ENG_API char const *toString(ProcessorFeature);
 enum class CpuVendor { Unknown, Intel, AMD };
 ENG_API char const *toString(CpuVendor);
 
+enum class CacheType : u16 {
+	unified, instruction, data, trace, count
+};
+
 struct CpuInfo {
+	struct FeatureIndex {
+		u32 slot;
+		u32 bit;
+	};
+	struct Cache {
+		u16 count;
+		u32 size;
+	};
+
 	u32 logicalProcessorCount;
-	u32 cacheL1;
-	u32 cacheL2;
-	u32 cacheL3;
-	char const *brand;
-	CpuVendor vendor;
+	Cache cache[3][(u32)CacheType::count];
+	u32 cacheLineSize;
 	u32 features[4];
+	CpuVendor vendor;
+	char brand[49];
 
 	inline b32 hasFeature(ProcessorFeature feature) const {
-		u32 index, slot = getFeaturePos(feature, index);
-		return (b32)(features[slot] & (1 << index));
+		FeatureIndex index = getFeaturePos(feature);
+		return (b32)(features[index.slot] & (1 << index.bit));
 	}
-	inline u32 getFeaturePos(ProcessorFeature f, u32 &index) const {
-		index = (u32)f & 0x1F;
-		return (u32)f >> 5;
+	inline FeatureIndex getFeaturePos(ProcessorFeature f) const {
+		FeatureIndex result;
+		result.slot = (u32)f >> 5;
+		result.bit = (u32)f & 0x1F;
+		return result;
+	}
+	u32 totalCacheSize(u32 level) const {
+		ASSERT(1 <= level && level <= 3);
+		u32 result = 0;
+		for (auto &c : cache[level - 1]) {
+			result += c.size;
+		}
+		return result;
 	}
 };
 extern ENG_API CpuInfo const cpuInfo;
@@ -258,6 +265,8 @@ struct ENG_API PerfTimer {
 		return getNanoseconds<Ret>(getElapsedCounter());
 	}
 
+	static s64 syncWithTime(s64 beginPC, f32 duration);
+
 private:
 	s64 begin;
 };
@@ -284,31 +293,34 @@ ENG_API StringSpan readEntireFile(wchar const *path);
 ENG_API StringSpan readEntireFile(char const *path);
 ENG_API void freeEntireFile(StringSpan file);
 
+ENG_API bool fileExists(char const *path);
+
 namespace Profiler {
-struct Entry {
-	u64 startCycle;
-	u64 totalCycles;
-	u64 selfCycles;
-	char const *name;
+
+ENG_API void init(u32 threadCount);
+
+struct Stat {
+	u64 startUs;
+	u64 totalUs;
+	u64 selfUs;
+	std::string name;
+	u16 depth;
 };
-ENG_API void createEntry(char const *name);
-ENG_API void addEntry();
+ENG_API void start(char const *name);
+ENG_API void stop();
 ENG_API void reset();
 
 struct Stats {
-	List<Entry> entries;
-	u64 frameStartCycle;
-	u64 totalCycles;
-	u64 totalMicroseconds;
+	List<List<Stat>> entries;
+	u64 startUs;
+	u64 totalUs;
 };
-ENG_API void prepareStats();
-ENG_API Stats &getStats();
 
 }; // namespace Profiler
 
 #if ENABLE_PROFILER
-#define PROFILE_BEGIN(message) Profiler::createEntry(message)
-#define PROFILE_END			   Profiler::addEntry()
+#define PROFILE_BEGIN(message) Profiler::start(message)
+#define PROFILE_END			   Profiler::stop()
 #define PROFILE_SCOPE(message) \
 	PROFILE_BEGIN(message);    \
 	DEFER { PROFILE_END; }
@@ -319,6 +331,8 @@ ENG_API Stats &getStats();
 #define PROFILE_SCOPE(message)
 #define PROFILE_FUNCTION
 #endif
+
+ENG_API void setCursorVisibility(bool);
 
 namespace Log {
 ENG_API void print(char const *msg);
@@ -350,8 +364,14 @@ void error(char const *format, T const &... args) {
 #define LDATA CONCAT(L, DATA)
 
 #if OS_WINDOWS
+
 enum {
+	Key_enter = 0x0D,
 	Key_escape = 0x1B,
+	Key_leftArrow = 0x25,
+	Key_upArrow = 0x26,
+	Key_rightArrow = 0x27,
+	Key_downArrow = 0x28,
 	Key_f1 = 0x70,
 	Key_f2 = 0x71,
 	Key_f3 = 0x72,

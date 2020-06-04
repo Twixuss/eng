@@ -52,7 +52,7 @@ void main(in uint i_id : SV_VertexID, out V2P o) {
 		-s, c
 	};
 
-	float2 position = tile.position + mul(offsets[vertexIndex], rotMat) * tile.size;
+	float2 position = tile.position + mul(offsets[vertexIndex] * tile.size, rotMat);
 	o.uv0 = tile.uv0 + uvs[vertexIndex] * tile.uvScale;
 	o.uv1 = tile.uv1 + uvs[vertexIndex] * tile.uvScale;
 	o.uvMix = tile.uvMix;
