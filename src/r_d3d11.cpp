@@ -1,4 +1,3 @@
-#include "allocator.h"
 #include "common.h"
 #include "renderer.h"
 #include "win32_common.h"
@@ -23,6 +22,7 @@ namespace D3D11 {
 static IDXGISwapChain *swapChain;
 static ID3D11Device *device;
 static ID3D11DeviceContext *immediateContext;
+static u32 drawCalls;
 
 struct VS {
 	using Type = ID3D11VertexShader *;
@@ -43,12 +43,20 @@ static typename Shader::Type _createShader(StringView src, char const *name, D3D
 	ID3DBlob *code{};
 	ID3DBlob *messages{};
 	HRESULT compileResult = D3DCompile(src.data(), src.size(), name, defines, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main",
-									   Shader::target, 0, 0, &code, &messages);
+									   Shader::target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &messages);
 	if (messages) {
 		Log::warn((char const *)messages->GetBufferPointer());
 		messages->Release();
 	}
-	DHR(compileResult);
+	if (FAILED(compileResult)) {
+		Log::print("Name: {}", name);
+		Log::print("Defines:");
+		for (auto d = defines; d->Name != 0; ++d) {
+			Log::print("    {}: {}", d->Name, d->Definition);
+		}
+		Log::print("Source: {}", src);
+		INVALID_CODE_PATH("shader compilation failed");
+	}
 	typename Shader::Type shader = 0;
 	DHR((device->*Shader::create)(code->GetBufferPointer(), code->GetBufferSize(), 0, &shader));
 	ASSERT(shader);
@@ -158,7 +166,8 @@ D3D11_PRIMITIVE_TOPOLOGY cvtTopology(Topology topology) {
 } 
 DXGI_FORMAT cvtFormat(Format format) {
 	switch (format) {
-		case Format::UN_RGB8: return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case Format::UN_RGBA8: return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case Format::UNS_RGBA8: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 		case Format::F_R32: return DXGI_FORMAT_R32_FLOAT;
 		case Format::F_RGBA16: return DXGI_FORMAT_R16G16B16A16_FLOAT;
 		case Format::F_RGB32: return DXGI_FORMAT_R32G32B32_FLOAT;
@@ -223,6 +232,8 @@ struct RenderTarget {
 	ID3D11RenderTargetView *rtv;
 	ID3D11ShaderResourceView *srv;
 	ID3D11Texture2D *texture;
+	v2u size;
+	u32 samplerIndex;
 };
 struct StructuredBuffer {
 	ID3D11Buffer *buffer;
@@ -241,7 +252,6 @@ struct Texture {
 };
 
 static ID3D11BlendState *blends[(u32)Blend::count][(u32)Blend::count][(u32)BlendOp::count]{};
-static ID3D11RasterizerState *rasterizers[(u32)Topology::count]{};
 static ID3D11SamplerState *samplers[(u32)Address::count][(u32)Filter::count]{};
 
 #define MAX_BUFFERS		   1024
@@ -254,7 +264,7 @@ struct Storage {
 	Storage() { 
 		memset(usageMask, ~0, sizeof(usageMask)); 
 	}
-	T *getNull() {
+	T *allocate() {
 		mutex.lock();
 		u32 maskIndex = 0;
 		while (usageMask[maskIndex] == 0) {
@@ -263,11 +273,21 @@ struct Storage {
 		if (maskIndex == storageSize) {
 			INVALID_CODE_PATH("out of '%s' storage", typeid(T).name());
 		}
-		u32 bitIndex = findLowestBit(usageMask[maskIndex]);
+		u32 bitIndex = findLowestOneBit(usageMask[maskIndex]);
 		usageMask[maskIndex] &= ~(1 << bitIndex);
 		mutex.unlock();
 
 		return values + maskIndex * bitsInMask + bitIndex;
+	}
+	void deallocate(T &val) {
+		auto index = indexOf(&val);
+
+		auto maskIndex = index / 32;
+		auto bitIndex = index % 32;
+
+		mutex.lock();
+		usageMask[maskIndex] |= (u32)(1u << bitIndex);
+		mutex.unlock();
 	}
 	u32 indexOf(T const *addr) { 
 		ASSERT(values <= addr && addr < values + storageSize);
@@ -317,7 +337,26 @@ struct alignas(16) ScreenInfoCBD {
 ScreenInfoCBD screenInfoCBD;
 ID3D11Buffer *screenInfoCB;
 
-void create(RenderTarget &rt, v2u size, Format format, u32 sampleCount) {
+struct alignas(16) FrameInfoCBD {
+	f32 time;
+#pragma warning(suppress : 4324)
+};
+ID3D11Buffer *frameInfoCB;
+
+ID3D11SamplerState **initSampler(Address address, Filter filter, v4f borderColor) {
+	auto sampler = &samplers[(u32)address][(u32)filter];
+	if (*sampler == 0) {
+		D3D11_SAMPLER_DESC desc{};
+		desc.AddressU = desc.AddressV = desc.AddressW = cvtAddress(address);
+		desc.Filter = cvtFilter(filter);
+		desc.MaxAnisotropy = 16;
+		desc.MaxLOD = FLT_MAX;
+		memcpy(desc.BorderColor, &borderColor, sizeof(borderColor));
+		DHR(device->CreateSamplerState(&desc, sampler));
+	}
+	return sampler;
+}
+void create(RenderTarget &rt, v2u size, Format format, u32 sampleCount, Address address, Filter filter, v4f borderColor) {
 	auto dxgiFormat = cvtFormat(format);
 	{
 		D3D11_TEXTURE2D_DESC desc{};
@@ -336,20 +375,25 @@ void create(RenderTarget &rt, v2u size, Format format, u32 sampleCount) {
 	desc.Format = dxgiFormat;
 	DHR(device->CreateRenderTargetView(rt.texture, &desc, &rt.rtv));
 	DHR(device->CreateShaderResourceView(rt.texture, 0, &rt.srv));
+	rt.samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
+	rt.size = size;
 }
-void release(RenderTarget &rt) {
-	RELEASE(rt.rtv);
-	RELEASE(rt.srv);
-	RELEASE(rt.texture);
-}
-void bind(RenderTarget &rt) { immediateContext->OMSetRenderTargets(1, &rt.rtv, 0); }
-void bind(RenderTarget &rt, Stage stage, u32 slot) {
+void bind(ID3D11ShaderResourceView *srv, u32 samplerIndex, Stage stage, u32 slot) {
+	auto sampler = &samplers[0][0] + samplerIndex;
+	ASSERT(sampler < &samplers[(u32)Address::count][(u32)Filter::count], "invalid sampler");
 	switch (stage) {
-		case Stage::vs: immediateContext->VSSetShaderResources(slot, 1, &rt.srv); break;
-		case Stage::ps: immediateContext->PSSetShaderResources(slot, 1, &rt.srv); break;
-		default: INVALID_CODE_PATH("bad shader stage");
+		case Stage::vs:
+			immediateContext->VSSetShaderResources(slot, 1, &srv);
+			immediateContext->VSSetSamplers(slot, 1, sampler);
+			break;
+		case Stage::ps:
+			immediateContext->PSSetShaderResources(slot, 1, &srv);
+			immediateContext->PSSetSamplers(slot, 1, sampler);
+			break;
+		default: INVALID_CODE_PATH("Bad shader stage"); break;
 	}
 }
+void bind(RenderTarget &rt, Stage stage, u32 slot) { bind(rt.srv, rt.samplerIndex, stage, slot); }
 void create(StructuredBuffer &buf, void const *data, u32 stride, u32 count) {
 	ASSERT(!buf.buffer, "StructuredBuffer not released");
 	buf.buffer = createBuffer(D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE, stride * count,
@@ -360,11 +404,6 @@ void create(StructuredBuffer &buf, void const *data, u32 stride, u32 count) {
 	desc.Buffer.NumElements = count;
 	DHR(device->CreateShaderResourceView(buf.buffer, &desc, &buf.srv));
 	buf.currentSize = count * stride;
-}
-void release(StructuredBuffer &buf) {
-	RELEASE(buf.buffer);
-	RELEASE(buf.srv);
-	buf.currentSize = 0;
 }
 bool valid(StructuredBuffer &buf) { return buf.buffer != 0; }
 void update(StructuredBuffer &buf, void const *data, u32 size) {
@@ -385,33 +424,35 @@ void bind(Shader &sh) {
 	immediateContext->VSSetShader(sh.vs, 0, 0);
 	immediateContext->PSSetShader(sh.ps, 0, 0);
 }
+void bind(Texture &tex, Stage stage, u32 slot) { bind(tex.srv, tex.samplerIndex, stage, slot); }
+void release(RenderTarget &rt) {
+	RELEASE(rt.rtv);
+	RELEASE(rt.srv);
+	RELEASE(rt.texture);
+}
+void release(StructuredBuffer &buf) {
+	RELEASE(buf.buffer);
+	RELEASE(buf.srv);
+	buf.currentSize = 0;
+}
 void release(Shader &sh) {
 	RELEASE(sh.vs);
 	RELEASE(sh.ps);
-}
-void bind(Texture &tex, Stage stage, u32 slot) {
-	auto sampler = &samplers[0][0] + tex.samplerIndex;
-	ASSERT(sampler < &samplers[(u32)Address::count][(u32)Filter::count], "invalid sampler");
-	switch (stage) {
-		case Stage::vs:
-			immediateContext->VSSetShaderResources(slot, 1, &tex.srv);
-			immediateContext->VSSetSamplers(slot, 1, sampler);
-			break;
-		case Stage::ps:
-			immediateContext->PSSetShaderResources(slot, 1, &tex.srv);
-			immediateContext->PSSetSamplers(slot, 1, sampler);
-			break;
-		default: INVALID_CODE_PATH("Bad shader stage"); break;
-	}
 }
 void release(Texture &tex) {
 	RELEASE(tex.srv);
 	RELEASE(tex.texture);
 }
 
-#define ADD_ARG(...)						 (Renderer * this, __VA_ARGS__)
-#define EXPORT								 extern "C" __declspec(dllexport)
-#define R_DECORATE(type, name, args, params) EXPORT type RNAME(name) ADD_ARG args
+void setViewport(v2u size) {
+	D3D11_VIEWPORT v{};
+	v.Width = (f32)size.x;
+	v.Height = (f32)size.y;
+	v.MaxDepth = 1;
+	immediateContext->RSSetViewports(1, &v);
+}
+
+#define R_DECORATE(type, name, args, params) FORCEINLINE type name args
 
 #define this renderer
 
@@ -420,19 +461,19 @@ R_INIT {
 
 	DXGI_SWAP_CHAIN_DESC swapChainDesc{};
 	swapChainDesc.BufferCount = 1;
-	swapChainDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	swapChainDesc.BufferDesc.Format = cvtFormat(backBufferFormat);
 	swapChainDesc.BufferDesc.RefreshRate = {60, 1};
 	swapChainDesc.BufferDesc.Width = 1;
 	swapChainDesc.BufferDesc.Height = 1;
 	swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-	swapChainDesc.OutputWindow = (HWND)this->window->handle;
+	swapChainDesc.OutputWindow = (HWND)window.handle;
 	swapChainDesc.SampleDesc = {sampleCount, 0};
 	swapChainDesc.Windowed = true;
 
 	UINT flags = 0;
-#if BUILD_DEBUG
+//#if BUILD_DEBUG
 	flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+//#endif
 	PROFILE_BEGIN("D3D11CreateDeviceAndSwapChain");
 	DHR(D3D11CreateDeviceAndSwapChain(0, D3D_DRIVER_TYPE_HARDWARE, 0, flags, 0, 0, D3D11_SDK_VERSION, &swapChainDesc,
 									  &swapChain, &device, 0, &immediateContext));
@@ -443,41 +484,84 @@ R_INIT {
 										sizeof(globalCBuffer.data), 0, 0, 0);
 	screenInfoCB = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
 								sizeof(screenInfoCBD), 0, 0, 0);
+	frameInfoCB = createBuffer(D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE,
+								sizeof(FrameInfoCBD), 0, 0, 0);
 	immediateContext->VSSetConstantBuffers(0, 1, &screenInfoCB);
 	immediateContext->PSSetConstantBuffers(0, 1, &screenInfoCB);
 	immediateContext->VSSetConstantBuffers(1, 1, &globalCBuffer.buffer);
 	immediateContext->PSSetConstantBuffers(1, 1, &globalCBuffer.buffer);
-	renderTargets.getNull(); //
+	immediateContext->VSSetConstantBuffers(2, 1, &frameInfoCB);
+	immediateContext->PSSetConstantBuffers(2, 1, &frameInfoCB);
+	renderTargets.allocate(); // backbuffer
 }
 R_CREATE_RT {
-	auto rt = renderTargets.getNull();
-	create(*rt, size, format, sampleCount);
-	//printf("renderTarget %u\n", renderTargets.indexOf(rt));
+	auto rt = renderTargets.allocate();
+	create(*rt, size, format, sampleCount, address, filter, borderColor);
 	return {renderTargets.indexOf(rt)};
 }
 R_BIND_RT {
-	CHECK_ID(rt);
-	bind(renderTargets[rt.id]);
+	ASSERT(rts.size());
+	ASSERT(rts.size() <= 8);
+	StaticList<ID3D11RenderTargetView *, 8> rtvs;
+	for (auto &rt : rts) {
+		CHECK_ID(rt);
+		rtvs.push_back(renderTargets[rt.id].rtv);
+	}
+	if (updateViewport) {
+		StaticList<D3D11_VIEWPORT, 8> viewports;
+		for (auto &rt : rts) {
+			auto &r = renderTargets[rt.id];
+
+			D3D11_VIEWPORT v{};
+			v.Width = (f32)r.size.x;
+			v.Height = (f32)r.size.y;
+			v.MaxDepth = 1;
+			viewports.push_back(v);
+		}
+		immediateContext->RSSetViewports((UINT)viewports.size(), viewports.data());
+	}
+	immediateContext->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), 0);
 }
 R_BIND_RT_AS_TEXTURE {
-	CHECK_ID(rt);
-	bind(renderTargets[rt.id], stage, slot);
+	ASSERT(rts.size() <= 8);
+	StaticList<ID3D11ShaderResourceView *, 8> srvs;
+	StaticList<ID3D11SamplerState *, 8> smps;
+	for (auto &rt : rts) {
+		CHECK_ID(rt);
+		auto &r = renderTargets[rt.id];
+
+		srvs.push_back(r.srv);
+
+		auto sampler = &samplers[0][0] + r.samplerIndex;
+		ASSERT(sampler < &samplers[(u32)Address::count][(u32)Filter::count], "invalid sampler");
+		smps.push_back(*sampler);
+	}
+	switch (stage) {
+		case Stage::vs:
+			immediateContext->VSSetShaderResources(slot, (UINT)rts.size(), srvs.data());
+			immediateContext->VSSetSamplers(slot, (UINT)rts.size(), smps.data());
+			break;
+		case Stage::ps:
+			immediateContext->PSSetShaderResources(slot, (UINT)rts.size(), srvs.data());
+			immediateContext->PSSetSamplers(slot, (UINT)rts.size(), smps.data());
+			break;
+		default: INVALID_CODE_PATH("Bad shader stage"); break;
+	}
 }
 R_SHUTDOWN {}
+R_GET_DRAW_COUNT {
+	return drawCalls;
+}
 R_RESIZE {
 	PROFILE_FUNCTION;
 	auto &backBuffer = renderTargets[0];
 	release(backBuffer);
-	DHR(swapChain->ResizeBuffers(1, clientSize.x, clientSize.y, DXGI_FORMAT_UNKNOWN, 0));
+	backBuffer.size = window.clientSize;
+	DHR(swapChain->ResizeBuffers(1, window.clientSize.x, window.clientSize.y, DXGI_FORMAT_UNKNOWN, 0));
 	DHR(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer.texture)));
 	DHR(device->CreateRenderTargetView(backBuffer.texture, 0, &backBuffer.rtv));
-	D3D11_VIEWPORT viewport{};
-	viewport.Width = (FLOAT)clientSize.x;
-	viewport.Height = (FLOAT)clientSize.y;
-	viewport.MaxDepth = 1.f;
-	immediateContext->RSSetViewports(1, &viewport);
 
-	screenInfoCBD.screenSize = (v2f)this->window->clientSize;
+	screenInfoCBD.screenSize = (v2f)window.clientSize;
 	screenInfoCBD.invScreenSize = 1.0f / screenInfoCBD.screenSize;
 	screenInfoCBD.aspectRatio = screenInfoCBD.screenSize.y / screenInfoCBD.screenSize.x;
 	D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -486,9 +570,8 @@ R_RESIZE {
 	immediateContext->Unmap(screenInfoCB, 0);
 }
 R_CREATE_BUFFER {
-	auto vb = buffers.getNull();
+	auto vb = buffers.allocate();
 	create(*vb, data, stride, count);
-	//printf("buffer %u\n", buffers.indexOf(vb));
 	return {buffers.indexOf(vb)};
 }
 R_UPDATE_BUFFER {
@@ -500,23 +583,10 @@ R_BIND_BUFFER {
 	CHECK_ID(buffer);
 	bind(buffers[buffer.id], stage, slot);
 }
-ID3D11SamplerState **initSampler(Address address, Filter filter, v4f borderColor) {
-	auto sampler = &samplers[(u32)address][(u32)filter];
-	if (*sampler == 0) {
-		D3D11_SAMPLER_DESC desc{};
-		desc.AddressU = desc.AddressV = desc.AddressW = cvtAddress(address);
-		desc.Filter = cvtFilter(filter);
-		desc.MaxAnisotropy = 16;
-		desc.MaxLOD = FLT_MAX;
-		memcpy(desc.BorderColor, &borderColor, sizeof(borderColor));
-		DHR(device->CreateSamplerState(&desc, sampler));
-	}
-	return sampler;
-}
 R_CREATE_TEXTURE_FROM_FILE {
 	PROFILE_FUNCTION;
 
-	auto tex = textures.getNull();
+	auto tex = textures.allocate();
 	DHR(D3DX11CreateShaderResourceViewFromFileA(device, path, 0, 0, &tex->srv, 0));
 	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 
@@ -526,11 +596,10 @@ R_CREATE_TEXTURE_FROM_FILE {
 	tex->texture->GetDesc(&desc);
 	tex->rowPitch = getSize(desc.Format) * desc.Width;
 
-	//printf("texture %u\n", textures.indexOf(tex));
 	return {textures.indexOf(tex)};
 }
 R_CREATE_TEXTURE {
-	auto tex = textures.getNull();
+	auto tex = textures.allocate();
 	auto dxgiFormat = cvtFormat(format);
 	{
 		D3D11_TEXTURE2D_DESC desc{};
@@ -554,63 +623,89 @@ R_CREATE_TEXTURE {
 	tex->samplerIndex = (u32)(initSampler(address, filter, borderColor) - &samplers[0][0]);
 	tex->rowPitch = getSize(dxgiFormat) * width;
 
-	//printf("texture %u\n", textures.indexOf(tex));
 	return {textures.indexOf(tex)};
 }
 R_RELEASE_TEXTURE {
 	CHECK_ID(texture);
 	release(textures[texture.id]);
+	textures.deallocate(textures[texture.id]);
 }
 R_BIND_TEXTURE {
 	CHECK_ID(texture);
 	bind(textures[texture.id], stage, slot);
 }
+R_UNBIND_TEXTURES {
+	ID3D11ShaderResourceView *nullSrv[8]{};
+	ID3D11SamplerState *nullSmp[8]{};
+	switch (stage) {
+		case Stage::vs:
+			immediateContext->VSSetShaderResources(slot, count, nullSrv);
+			immediateContext->VSSetSamplers(slot, count, nullSmp);
+			break;
+		case Stage::ps:
+			immediateContext->PSSetShaderResources(slot, count, nullSrv);
+			immediateContext->PSSetSamplers(slot, count, nullSmp);
+			break;
+		default: INVALID_CODE_PATH("Bad shader stage"); break;
+	}
+}
 R_CREATE_SHADER {
 	PROFILE_FUNCTION;
-	auto shader = shaders.getNull();
+	auto shader = shaders.allocate();
 
 	char buffer[256];
 	sprintf(buffer, "%s.hlsl", path);
 	path = buffer;
 
 	auto shaderSource = readEntireFile(path);
-	ASSERT(shaderSource.data());
+	ASSERT(shaderSource.valid);
 
-	StaticList<D3D_SHADER_MACRO, 256> defines;
+	StaticList<D3D_SHADER_MACRO, 256> commonDefines;
 
 	for (auto &d : macros) {
-		defines.push_back({d.name, d.value});
+		commonDefines.push_back({d.name, d.value});
 	}
-
-	defines.push_back({"COMPILE_VS"});
-	defines.push_back({});
-	shader->vs = createVertexShader(shaderSource, path, defines.data());
-	ASSERT(shader->vs);
-
-	defines.pop_back(); // null
-	defines.pop_back(); // compile vs
-
-	defines.push_back({"COMPILE_PS"});
-	defines.push_back({});
-	shader->ps = createPixelShader(shaderSource, path, defines.data());
-	ASSERT(shader->ps);
+	WorkQueue work;
+	work.push([&] {
+		auto defines = commonDefines;
+		defines.push_back({"COMPILE_VS"});
+		defines.push_back({});
+		shader->vs = createVertexShader(shaderSource.data, path, defines.data());
+		ASSERT(shader->vs);
+	});
+	{
+		auto defines = commonDefines;
+		defines.push_back({"COMPILE_PS"});
+		defines.push_back({});
+		shader->ps = createPixelShader(shaderSource.data, path, defines.data());
+		ASSERT(shader->ps);
+	}
+	work.completeAllWork();
 
 	freeEntireFile(shaderSource);
 
-	//printf("shader %u\n", shaders.indexOf(shader));
 	return {shaders.indexOf(shader)};
 }
 R_RELEASE_SHADER {
 	CHECK_ID(shader);
 	release(shaders[shader.id]);
+	shaders.deallocate(shaders[shader.id]);
 }
 R_RELEASE_RT {
 	CHECK_ID(rt);
 	release(renderTargets[rt.id]);
+	renderTargets.deallocate(renderTargets[rt.id]);
 }
 R_PRESENT {
-	DHR(swapChain->Present(this->window->fullscreen, 0));
-	this->drawCalls = 0;
+	DHR(swapChain->Present(window.fullscreen, 0));
+	drawCalls = 0;
+
+	FrameInfoCBD frameInfoCBD;
+	frameInfoCBD.time = time.time;
+	D3D11_MAPPED_SUBRESOURCE mapped{};
+	DHR(immediateContext->Map(frameInfoCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+	memcpy(mapped.pData, &frameInfoCBD, sizeof(frameInfoCBD));
+	immediateContext->Unmap(frameInfoCB, 0);
 }
 R_UPDATE_TEXTURE {
 	PROFILE_FUNCTION;
@@ -622,7 +717,7 @@ R_BIND_SHADER {
 	bind(shaders[shader.id]);
 }
 R_DRAW {
-	++this->drawCalls;
+	++drawCalls;
 	immediateContext->Draw(vertexCount, offset);
 }
 R_SET_MATRIX {
@@ -676,8 +771,13 @@ ID3D11DepthStencilView* createDepthTarget(v2u size) {
 }
 */
 
-EXPORT ID3D11Device *d3d11_getDevice() { return device; }
-EXPORT ID3D11DeviceContext *d3d11_getImmediateContext() { return immediateContext; }
-EXPORT IDXGISwapChain *d3d11_getSwapChain() { return swapChain; }
+//EXPORT ID3D11Device *d3d11_getDevice() { return device; }
+//EXPORT ID3D11DeviceContext *d3d11_getImmediateContext() { return immediateContext; }
+//EXPORT IDXGISwapChain *d3d11_getSwapChain() { return swapChain; }
 
 } // namespace D3D11
+
+#undef R_DECORATE
+#define R_DECORATE(type, name, args, params) extern "C" __declspec(dllexport) type RNAME(name) args { return D3D11::name params; }
+
+R_ALLFUNS;

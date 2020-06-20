@@ -1,7 +1,5 @@
 #include "common.h"
-#include "common.h"
 #include "common_internal.h"
-#include "../dep/tl/include/tl/thread.h"
 
 #include <unordered_map>
 
@@ -13,6 +11,7 @@
 #pragma push_macro("OS_WINDOWS")
 #include <Shlwapi.h>
 #pragma pop_macro("OS_WINDOWS")
+#include <Psapi.h>
 #include <strsafe.h>
 
 #include <array>
@@ -22,12 +21,19 @@
 #pragma comment(lib, "shlwapi")
 #pragma warning(pop)
 
+void dummy(void const *) {
+
+}
+
 static void (*pushWorkImpl)(WorkQueue *queue, void (*fn)(void *), void *param);
 static void (*waitForWorkCompletionImpl)(WorkQueue *);
 
 static void doWork(void (*fn)(void *), void *param, WorkQueue *queue) {
 	fn(param);
 	InterlockedDecrement(&queue->workToDo);
+#if !ENG_WORK_USE_TEMP
+	free(param);
+#endif
 }
 
 struct WorkEntry {
@@ -45,7 +51,7 @@ struct SharedWorkQueue {
 		mutex.unlock();
 	}
 	auto try_pop() {
-		std::optional<WorkEntry> entry;
+		Optional<WorkEntry> entry;
 		mutex.lock();
 		if (queue.size()) {
 			entry.emplace(std::move(queue.front()));
@@ -76,11 +82,11 @@ void initWorkerThreads(u32 threadCount) {
 		pushWorkImpl = [](WorkQueue *queue, void (*fn)(void *), void *param) { doWork(fn, param, queue); };
 		waitForWorkCompletionImpl = [](WorkQueue *queue) {};
 	} else {
-		waitForWorkCompletionImpl = [](WorkQueue *queue) { 
-			waitUntil([queue] { 
+		waitForWorkCompletionImpl = [](WorkQueue *queue) {
+			waitUntil([queue] {
 				tryDoWork();
-				return queue->completed(); 
-			}); 
+				return queue->completed();
+			});
 		};
 		std::mutex threadIdMapMutex;
 		for (u32 threadIndex = 0; threadIndex < threadCount; ++threadIndex) {
@@ -90,7 +96,7 @@ void initWorkerThreads(u32 threadCount) {
 				threadIdMapMutex.unlock();
 				InterlockedIncrement(&initializedWorkers);
 				for (;;) {
-					waitUntil([]{ return tryDoWork() || stopWork; });
+					waitUntil([] { return tryDoWork() || stopWork; });
 					if (stopWork)
 						break;
 				}
@@ -108,44 +114,36 @@ void shutdownWorkerThreads() {
 	stopWork = true;
 	waitUntil([] { return deadWorkers == workerCount; });
 }
-u32 getWorkerThreadCount() {
-	return workerCount;
-}
+u32 getWorkerThreadCount() { return workerCount; }
 void WorkQueue::push_(void (*fn)(void *), void *param) { return pushWorkImpl(this, fn, param); }
 void WorkQueue::completeAllWork() { return waitForWorkCompletionImpl(this); }
-bool WorkQueue::completed() {
-	return workToDo == 0;
-}
+bool WorkQueue::completed() { return workToDo == 0; }
 
 struct CPUID {
 	s32 eax;
 	s32 ebx;
 	s32 ecx;
 	s32 edx;
-	
-	CPUID(s32 func) {
-		__cpuid(data(), func);
-	}
 
-	CPUID(s32 func, s32 subfunc) {
-		__cpuidex(data(), func, subfunc);
-	}
+	CPUID(s32 func) { __cpuid(data(), func); }
+	CPUID(s32 func, s32 subfunc) { __cpuidex(data(), func, subfunc); }
 
 	s32 *data() { return &eax; }
 };
 
 CacheType cvt(PROCESSOR_CACHE_TYPE v) {
 	switch (v) {
-		case PROCESSOR_CACHE_TYPE::CacheUnified:	 return CacheType::unified;
+		case PROCESSOR_CACHE_TYPE::CacheUnified: return CacheType::unified;
 		case PROCESSOR_CACHE_TYPE::CacheInstruction: return CacheType::instruction;
-		case PROCESSOR_CACHE_TYPE::CacheData:		 return CacheType::data;
-		case PROCESSOR_CACHE_TYPE::CacheTrace:		 return CacheType::trace;
+		case PROCESSOR_CACHE_TYPE::CacheData: return CacheType::data;
+		case PROCESSOR_CACHE_TYPE::CacheTrace: return CacheType::trace;
 		default: INVALID_CODE_PATH();
 	}
 }
 
 char const *toString(CacheType v) {
-#define CASE(name) case CacheType::name: return #name;
+#define CASE(name) \
+	case CacheType::name: return #name;
 	switch (v) {
 		CASE(data)
 		CASE(instruction)
@@ -162,7 +160,7 @@ static CpuInfo getCpuInfo() {
 	DWORD processorInfoLength = 0;
 	if (!GetLogicalProcessorInformation(0, &processorInfoLength)) {
 		DWORD err = GetLastError();
-		ASSERT(err == ERROR_INSUFFICIENT_BUFFER, "GetLastError(): %u", err);
+		ASSERT(err == ERROR_INSUFFICIENT_BUFFER, "GetLastError(): {}", err);
 	}
 
 	auto buffer = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)malloc(processorInfoLength);
@@ -179,7 +177,7 @@ static CpuInfo getCpuInfo() {
 			case RelationProcessorCore: result.logicalProcessorCount += countBits(info.ProcessorMask); break;
 			case RelationCache: {
 				auto &cache = result.cache[info.Cache.Level - 1][(u8)cvt(info.Cache.Type)];
-				cache.size += info.Cache.Size; 
+				cache.size += info.Cache.Size;
 				++cache.count;
 				result.cacheLineSize = info.Cache.LineSize;
 				break;
@@ -197,55 +195,39 @@ static CpuInfo getCpuInfo() {
 	StaticList<CPUID, 64> data;
 	StaticList<CPUID, 64> dataEx;
 
-	// Calling __cpuid with 0x0 as the function_id argument
-	// gets the number of the highest valid function ID.
-	s32 nIds = CPUID(0).eax;
-	//data.reserve((umm)nIds);
-
-	for (s32 i = 0; i <= nIds; ++i) {
+	s32 highestId = CPUID(0).eax;
+	for (s32 i = 0; i <= highestId; ++i) {
 		data.push_back(CPUID(i, 0));
 	}
-
-	ASSERT(data.size() > 0);
-
-	char vendorName[24];
-	((s32 *)vendorName)[0] = data[0].ebx;
-	((s32 *)vendorName)[1] = data[0].edx;
-	((s32 *)vendorName)[2] = data[0].ecx;
-	if (startsWith(vendorName, 24, "GenuineIntel")) {
-		result.vendor = CpuVendor::Intel;
-	} else if (startsWith(vendorName, 24, "AuthenticAMD")) {
-		result.vendor = CpuVendor::AMD;
+	if (data.size() > 0) {
+		char vendorName[24];
+		((s32 *)vendorName)[0] = data[0].ebx;
+		((s32 *)vendorName)[1] = data[0].edx;
+		((s32 *)vendorName)[2] = data[0].ecx;
+		if (startsWith(vendorName, 24, "GenuineIntel")) {
+			result.vendor = CpuVendor::Intel;
+		} else if (startsWith(vendorName, 24, "AuthenticAMD")) {
+			result.vendor = CpuVendor::AMD;
+		}
 	}
-
-	// load bitset with flags for function 0x00000001
-	if (nIds >= 1) {
+	if (data.size() > 1) {
 		ecx1 = data[1].ecx;
 		edx1 = data[1].edx;
 	}
-
-	// load bitset with flags for function 0x00000007
-	if (nIds >= 7) {
+	if (data.size() > 7) {
 		ebx7 = data[7].ebx;
 		ecx7 = data[7].ecx;
 	}
 
-	// Calling __cpuid with 0x80000000 as the function_id argument
-	// gets the number of the highest valid extended ID.
-	s32 nExIds_ = CPUID(0x80000000).eax;
-
-	for (s32 i = 0x80000000; i <= nExIds_; ++i) {
+	s32 highestExId = CPUID(0x80000000).eax;
+	for (s32 i = 0x80000000; i <= highestExId; ++i) {
 		dataEx.push_back(CPUID(i, 0));
 	}
-
-	// load bitset with flags for function 0x80000001
-	if (nExIds_ >= 0x80000001) {
+	if (dataEx.size() > 1) {
 		ecx1ex = dataEx[1].ecx;
 		edx1ex = dataEx[1].edx;
 	}
-
-	// Interpret CPU brand string if reported
-	if (nExIds_ >= 0x80000004) {
+	if (dataEx.size() > 4) {
 		result.brand[48] = 0;
 		memcpy(result.brand + sizeof(CPUID) * 0, dataEx[2].data(), sizeof(CPUID));
 		memcpy(result.brand + sizeof(CPUID) * 1, dataEx[3].data(), sizeof(CPUID));
@@ -313,7 +295,7 @@ static CpuInfo getCpuInfo() {
     set(ProcessorFeature::_3DNOWEXT,	(edx1ex	& (1 << 30)) && result.vendor == CpuVendor::AMD);
     set(ProcessorFeature::_3DNOW,		(edx1ex	& (1 << 31)) && result.vendor == CpuVendor::AMD);
 	// clang-format on
-
+	
 	return result;
 }
 
@@ -418,7 +400,7 @@ s64 PerfTimer::syncWithTime(s64 beginPC, f32 duration) {
 #error no timer
 #endif
 
-s64 FileHandle::setPointer(s64 distance, SeekFrom startPoint) {
+s64 File::setPointer(s64 distance, SeekFrom startPoint) {
 	LARGE_INTEGER result, dist;
 	dist.QuadPart = distance;
 	if (!SetFilePointerEx(handle, dist, &result, (DWORD)startPoint)) {
@@ -427,7 +409,7 @@ s64 FileHandle::setPointer(s64 distance, SeekFrom startPoint) {
 	return result.QuadPart;
 }
 
-s64 FileHandle::getPointer() {
+s64 File::getPointer() {
 	LARGE_INTEGER result;
 	if (!SetFilePointerEx(handle, {}, &result, SEEK_CUR)) {
 		return -1;
@@ -435,7 +417,8 @@ s64 FileHandle::getPointer() {
 	return result.QuadPart;
 }
 
-bool FileHandle::read(void *buffer, size_t size) {
+bool File::read(void *buffer, umm _size) {
+	s64 size = (s64)_size;
 	DWORD const maxSize = 0xFFFFFFFF;
 	for (;;) {
 		DWORD bytesRead = 0;
@@ -443,18 +426,22 @@ bool FileHandle::read(void *buffer, size_t size) {
 			if (!ReadFile(handle, buffer, maxSize, &bytesRead, 0)) {
 				return false;
 			}
-			buffer = (u8 *)buffer + maxSize;
-			size -= maxSize;
-		} else {
+			if (bytesRead == maxSize) {
+				buffer = (u8 *)buffer + maxSize;
+				size -= maxSize;
+				continue;
+			}
+		} else if (size > 0) {
 			if (!ReadFile(handle, buffer, (DWORD)size, &bytesRead, 0)) {
 				return false;
 			}
-			break;
 		}
+		break;
 	}
 	return true;
 }
-bool FileHandle::write(void const *buffer, size_t size) {
+bool File::write(void const *buffer, umm _size) {
+	s64 size = (s64)_size;
 	DWORD const maxSize = 0xFFFFFFFF;
 	for (;;) {
 		DWORD bytesWritten = 0;
@@ -473,44 +460,76 @@ bool FileHandle::write(void const *buffer, size_t size) {
 	}
 	return true;
 }
+bool File::writeLine() {
+#if OS_WINDOWS
+	return write("\r\n", 2);
+#else
+	return write("\n", 1);
+#endif
+}
+File::File(char const* path, u32 mode) {
+	handle = INVALID_HANDLE_VALUE;
+	DWORD creationDisposition = (DWORD)((mode & File::OpenMode_keep) ? CREATE_NEW : CREATE_ALWAYS);
+	if (!(mode & File::OpenMode_write)) {
+		if (mode & File::OpenMode_read) {
+			creationDisposition = OPEN_EXISTING;
+		} else {
+			CreateFileA(path, 0, FILE_SHARE_READ, 0, creationDisposition, FILE_ATTRIBUTE_NORMAL, 0);
+			return;
+		}
+	}
+	DWORD desiredAccess = mode & (File::OpenMode_read | File::OpenMode_write);
+	handle = CreateFileA(path, desiredAccess, FILE_SHARE_READ, 0, creationDisposition, FILE_ATTRIBUTE_NORMAL, 0);
+}
+void File::close() {
+	if (valid()) {
+		CloseHandle(handle);
+		handle = INVALID_HANDLE_VALUE;
+	}
+}
 
-StringSpan readEntireFile(FileHandle file) {
-	LARGE_INTEGER endPtr{};
-	if (!SetFilePointerEx(file.handle, {}, &endPtr, FILE_END)) {
-		return {};
+bool File::valid() {
+	return handle != INVALID_HANDLE_VALUE;
+}
+
+EntireFile readEntireFile(File file) {
+	EntireFile result{};
+	result.valid = true;
+
+	file.setPointer(0, SeekFrom::end);
+	umm size = (umm)file.getPointer();
+	if (!size) {
+		return result;
 	}
-	if (!SetFilePointerEx(file.handle, {}, 0, FILE_BEGIN)) {
-		return {};
-	}
-	size_t size = (size_t)endPtr.QuadPart;
+	file.setPointer(0, SeekFrom::begin);
+
 	auto data = malloc(size);
-	if (!file.read(data, size)) {
+	if (file.read(data, size)) {
+		result.data = {(char *)data, size};
+	} else {
 		free(data);
+		result.valid = false;
+	}
+	
+	return result;
+}
+
+EntireFile readEntireFile(char const *path) {
+	File file(path, File::OpenMode_read);
+	DEFER { file.close(); };
+	if (!file.valid()) {
 		return {};
 	}
-	return {(char *)data, size};
+	return readEntireFile(file);
 }
 
-#define READ_FILE(char, CreateFileA)                                                                                  \
-	StringSpan readEntireFile(char const *path) {                                                                     \
-		HANDLE handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0); \
-		if (handle == INVALID_HANDLE_VALUE) {                                                                         \
-			return {};                                                                                                \
-		}                                                                                                             \
-		DEFER { CloseHandle(handle); };                                                                               \
-		return readEntireFile(FileHandle{handle});                                                                    \
+void freeEntireFile(EntireFile file) { 
+	if (file.valid) {
+		free(file.data.begin()); 
 	}
-
-READ_FILE(char, CreateFileA);
-READ_FILE(wchar, CreateFileW);
-
-#undef READ_FILE
-
-void freeEntireFile(StringSpan file) { free(file.begin()); }
-
-bool fileExists(char const* path) {
-	return PathFileExistsA(path);
 }
+
+bool fileExists(char const *path) { return PathFileExistsA(path); }
 
 namespace Profiler {
 #define MAX_PROFILER_ENTRY_COUNT 1024
@@ -527,8 +546,7 @@ void init(u32 totalThreadCount) {
 	stats.entries.resize(totalThreadCount);
 	for (auto &l : stats.entries)
 		l.reserve(256);
-	stats.startUs = 
-	stats.totalUs = (u64)PerfTimer::getCounter();
+	stats.startUs = stats.totalUs = (u64)PerfTimer::getCounter();
 }
 u32 getThreadId() {
 	auto it = threadIdMap.find(GetCurrentThreadId());
@@ -544,9 +562,7 @@ void start(char const *name) {
 	Stat result;
 	result.depth = (u16)threadStacks[threadId].calls.size();
 	result.name = name;
-	result.selfUs = 
-	result.startUs =
-	result.totalUs = (u64)PerfTimer::getCounter();
+	result.selfUs = result.startUs = result.totalUs = (u64)PerfTimer::getCounter();
 
 	std::scoped_lock _l(mutex);
 	threadStacks[threadId].calls.push_back(std::move(result));
@@ -572,7 +588,7 @@ Stats getStats() {
 		for (auto &stat : l) {
 			stat.startUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stat.startUs);
 			stat.totalUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stat.totalUs);
-			stat.selfUs = (u64)PerfTimer::getMicroseconds<f64> ((s64)stat.selfUs);
+			stat.selfUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stat.selfUs);
 		}
 	}
 	stats.startUs = (u64)PerfTimer::getMicroseconds<f64>((s64)stats.startUs);
@@ -584,18 +600,195 @@ void reset() {
 		l.clear();
 	for (auto &l : threadStacks)
 		l.calls.clear();
-	stats.startUs = 
-	stats.totalUs = (u64)PerfTimer::getCounter();
+	stats.startUs = stats.totalUs = (u64)PerfTimer::getCounter();
 }
 } // namespace Profiler
 
 void setCursorVisibility(bool visible) {
 	if (visible)
-		while (ShowCursor(visible) < 0);
+		while (ShowCursor(visible) < 0) {}
 	else
-		while (ShowCursor(visible) >= 0);
+		while (ShowCursor(visible) >= 0) {}
 }
 
 namespace Log {
-void print(char const *msg) { puts(msg); }
+
+HANDLE handle;
+
+void setHandle(void *newHandle) {
+	handle = (HANDLE)newHandle;
+}
+
+void _print(Span<char const> msg, Span<char const> moduleName) {
+	auto result = format<OsAllocator>("[{}] {}\n", moduleName, msg);
+	DWORD charsWritten;
+	WriteConsoleA(handle, result.data(), (DWORD)result.size(), &charsWritten, 0);
+}
+void setColor(Color c) {
+	SetConsoleTextAttribute(handle, (WORD)c);
+}
+
 } // namespace Log
+
+#if 1
+static constexpr u32 tempStoragePerThread = 1024 * 1024 * 16;
+struct TempStorage {
+	u8 *top = data;
+	u8 data[tempStoragePerThread];
+	TempStorage(){
+		memset(data, 'C', sizeof(data));
+	}
+};
+
+std::unordered_map<DWORD, TempStorage> threadStorages;
+std::mutex threadStorageMutex;
+
+void *allocateTemp(u32 size, u32 align) {
+	align = max(align, 8u);
+	if (!isPowerOf2(align)) {
+		FATAL_CODE_PATH("align is not a power of two");
+	}
+
+	threadStorageMutex.lock();
+	TempStorage &storage = threadStorages[GetCurrentThreadId()];
+	threadStorageMutex.unlock();
+	
+	void *result = ceil(storage.top, align);
+	storage.top = (u8 *)result + size;
+	if (storage.top > storage.data + tempStoragePerThread) {
+		FATAL_CODE_PATH("temp storage overflow");
+	}
+	return result;
+}
+void resetTempStorage() { 
+	for (auto &[threadId, storage] : threadStorages)
+		storage.top = storage.data;
+}
+u32 getTempMemoryUsage() {
+	u32 result = 0;
+	for (auto &[threadId, storage] : threadStorages)
+		result += (u32)(storage.top - storage.data);
+	return result;
+}
+#else
+static constexpr u32 tempStorageSize = 1024 * 1024 * 64;
+// TODO: this should be u8 but for some reason trying to write in the middle 
+static u8 tempStorage[tempStorageSize];
+static u32 volatile tempStorageOffset = 0;
+
+void *allocateTemp(u32 size, u32 align) {
+	align = max(align, 8u);
+	u32 resultOffset = lockAdd(tempStorageOffset, size);
+	ASSERT(resultOffset + size <= tempStorageSize);
+	return tempStorage + resultOffset;
+}
+void resetTempStorage() { 
+	tempStorageOffset = 0;
+}
+u32 getTempMemoryUsage() {
+	return tempStorageOffset;
+}
+#endif
+
+u64 getMemoryUsage() {
+	u64 result = 0;
+
+	PROCESS_MEMORY_COUNTERS memoryCounters;
+	if (GetProcessMemoryInfo(GetCurrentProcess(), &memoryCounters, sizeof(memoryCounters))) {
+		result = memoryCounters.PagefileUsage;
+	}
+	return result;
+}
+
+Span<char const> timeUnitToString(u16 unit) {
+	switch (unit) {
+		case 0: return {"ns", 2};
+		case 1: return {"us", 2};
+		case 2: return {"ms", 2};
+		case 3: return {"s", 1};
+		case 4: return {"m", 1};
+		case 5: return {"h", 1};
+		case 6: return {"d", 1};
+		default: INVALID_CODE_PATH();
+	}
+}
+
+constexpr u32 timeDivThreshold = 10;
+ConvertedTime cvtNanoseconds (u64  nanoseconds){return  nanoseconds >= timeDivThreshold * 1000 ? cvtMicroseconds( nanoseconds / 1000) : ConvertedTime{(u16) nanoseconds, 0}; }
+ConvertedTime cvtMicroseconds(u64 microseconds){return microseconds >= timeDivThreshold * 1000 ? cvtMilliseconds(microseconds / 1000) : ConvertedTime{(u16)microseconds, 1}; }
+ConvertedTime cvtMilliseconds(u64 milliseconds){return milliseconds >= timeDivThreshold * 1000 ? cvtSeconds     (milliseconds / 1000) : ConvertedTime{(u16)milliseconds, 2}; }
+ConvertedTime cvtSeconds     (u64      seconds){return      seconds >= timeDivThreshold *   60 ? cvtMinutes     (     seconds /   60) : ConvertedTime{(u16)     seconds, 3}; }
+ConvertedTime cvtMinutes     (u64      minutes){return      minutes >= timeDivThreshold *   60 ? cvtHours       (     minutes /   60) : ConvertedTime{(u16)     minutes, 4}; }
+ConvertedTime cvtHours       (u64        hours){return        hours >= timeDivThreshold *   24 ? ConvertedTime{(u16)(hours / 24), 6}  : ConvertedTime{(u16)       hours, 5}; }
+
+Span<char const> byteUnitToString(u16 unit) {
+	switch (unit) {
+		case 0: return {"B", 1};
+		case 1: return {"KB", 2};
+		case 2: return {"MB", 2};
+		case 3: return {"GB", 2};
+		case 4: return {"TB", 2};
+		case 5: return {"PB", 2};
+		case 6: return {"EB", 2};
+		default: INVALID_CODE_PATH();
+	}
+}
+
+constexpr u32 byteDivThreshold = 10;
+ConvertedBytes cvtBytes(u64 bytes) {
+	ConvertedBytes result{};
+	while (bytes >= byteDivThreshold * 1024) { bytes /= 1024; ++result.unit; }
+	result.value = (u16)bytes;
+	return result;
+}
+
+HMODULE optimizedModule;
+void *getOptimizedProcAddress(char const *name) {
+	void *result = GetProcAddress(optimizedModule, name);
+	ASSERT(result);
+	return result;
+}
+Span<char const> optimizedModuleName;
+Span<char const> getOptimizedModuleName() {
+	return optimizedModuleName;
+}
+void loadOptimizedModule() {
+	char const *optimizedModuleFileName;
+	if (cpuInfo.hasFeature(ProcessorFeature::AVX2)) {
+		optimizedModuleFileName = "o_avx2.dll";
+		optimizedModuleName = "AVX2";
+	} else if (cpuInfo.hasFeature(ProcessorFeature::AVX)) {
+		optimizedModuleFileName = "o_avx.dll";
+		optimizedModuleName = "AVX";
+	} else {
+		optimizedModuleFileName = "o_sse.dll";
+		optimizedModuleName = "SSE";
+	}
+
+	optimizedModule = LoadLibraryA(optimizedModuleFileName);
+	ASSERT(optimizedModule, "Failed to load optimized module ({})", optimizedModuleFileName);
+}
+
+ENG_API Span<char const> _getModuleName(void *imageBase) {
+	HMODULE module = (HMODULE)imageBase;
+
+	char modulePath[256];
+	DWORD modulePathSize = GetModuleFileNameA(module, modulePath, sizeof(modulePath));
+
+	char *nameBegin = modulePath + modulePathSize;
+	char *nameEnd = nameBegin;
+	while (nameBegin > modulePath && *nameBegin != '\\') {
+		if (*nameBegin == '.') {
+			nameEnd = nameBegin;
+			*nameEnd = '\0';
+		}
+		--nameBegin;
+	}
+	if (nameBegin != modulePath) {
+		++nameBegin;
+	}
+	auto moduleNameLength = (umm)(nameEnd - nameBegin);
+	char *result = (char *)malloc(moduleNameLength);
+	memcpy(result, nameBegin, moduleNameLength);
+	return Span{result, result + moduleNameLength};
+}

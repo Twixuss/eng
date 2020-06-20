@@ -35,10 +35,15 @@ SoundBuffer loadWaveFile(char const *path) {
 	SoundBuffer result{};
 
 	auto file = readEntireFile(path);
-	if (!file.size())
+	if (!file.valid) {
 		goto finish;
-		
-	auto &header = *(WavHeader *)file.data();
+	}
+	
+	if (file.data.size() < sizeof(WavHeader)) {
+		goto finish;
+	}
+
+	auto &header = *(WavHeader *)file.data.data();
 
 	if (memcmp(&header.chunkId, "RIFF", 4) != 0)
 		goto finish;
@@ -51,7 +56,7 @@ SoundBuffer loadWaveFile(char const *path) {
 	if (header.subChunk1Size != 16)
 		goto finish;
 
-	for (WavSubchunk *subChunk = &header.subChunk2; (char *)subChunk < file.end(); subChunk = subChunk->next()) {
+	for (WavSubchunk *subChunk = &header.subChunk2; (char *)subChunk < file.data.end(); subChunk = subChunk->next()) {
 		subChunks.push_back(subChunk);
 	}
 	
@@ -62,19 +67,24 @@ SoundBuffer loadWaveFile(char const *path) {
 	}
 	WavSubchunk *dataSubchunk = *it;
 
-	result._alloc = file.data();
+	result._alloc = file.data.data();
 	result.data = dataSubchunk->data();
 	result.sampleRate = header.sampleRate;
 	result.sampleCount = dataSubchunk->size / header.blockAlign;
 	result.numChannels = header.numChannels;
 	result.bitsPerSample = header.bitsPerSample;
 	
+	Log::print("{}", result.sampleRate);
+
 finish:
-	if (result._alloc != file.data()) {
+	if (result._alloc != file.data.data()) {
 		freeEntireFile(file);
 	}
 	return result;
 }
-ENG_API void freeSoundBuffer(SoundBuffer buffer) {
-	freeEntireFile({(char *)buffer._alloc, (umm)0});
+void freeSoundBuffer(SoundBuffer buffer) {
+	EntireFile file;
+	file.data = {(char *)buffer._alloc, (umm)0};
+	file.valid = true;
+	freeEntireFile(file);
 }

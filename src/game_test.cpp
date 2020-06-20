@@ -458,7 +458,7 @@ struct GAME_API Game {
 		u64 end = __rdtsc();
 		u64 total = end - begin;
 		renderer.fillRenderTarget(backBuffer);
-		printf("time: %fms; cy: %llu; cy/e: %llu\n", timer.getMilliseconds(), total, total / (cs.x * cs.y));
+		Log::print("time: {}ms; cy: {}; cy/e: {}\n", timer.getMilliseconds(), total, total / (cs.x * cs.y));
 	}
 	~Game() {}
 };

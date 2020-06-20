@@ -16,4 +16,5 @@ struct SoundBuffer {
 };
 
 ENG_API SoundBuffer loadWaveFile(char const *path);
+inline SoundBuffer loadWaveFile(Span<char const> path) { return loadWaveFile(nullTerminate<TempAllocator>(path).data()); }
 ENG_API void freeSoundBuffer(SoundBuffer);

@@ -3,6 +3,6 @@ bin/*
 */bin/*
 *.pdb
 */.vs/*
-temp/*
+dunger/temp/*
 *.wav
 tool/*

@@ -3,10 +3,10 @@
 #include <Windows.h>
 #pragma warning(pop)
 
-#define DHR(call)               \
-	do {                        \
-		HRESULT dhr = call;     \
-		ASSERT(SUCCEEDED(dhr)); \
+#define DHR(call)                      \
+	do {                               \
+		HRESULT dhr = call;            \
+		ASSERT(SUCCEEDED(dhr), #call); \
 	} while (0)
 
 #define RELEASE_ZERO(x)   \

@@ -32,22 +32,9 @@
 #define GAME_API extern "C" __declspec(dllimport)
 #endif
 
-namespace Log {
-ENG_API void print(char const *msg);
-template <class... T>
-void print(char const *format, T const &... args);
-template <class... T>
-void warn(char const *format, T const &... args);
-template <class... T>
-void error(char const *format, T const &... args);
-} // namespace Log
+#define FATAL_CODE_PATH(msg) Log::fatal(msg);DEBUG_BREAK;throw 0
 
-#include <stdexcept>
-#include <functional>
-#define PRINT_AND_THROW(string, ...)              \
-	Log::error(string "\nMessage: " __VA_ARGS__); \
-	DEBUG_BREAK();                                \
-	throw std::runtime_error(string)
+#define PRINT_AND_THROW(string, ...) Log::error(string "\nMessage: " __VA_ARGS__); FATAL_CODE_PATH(string)
 
 #define ASSERTION_FAILURE(causeString, expression, ...)                                                     \
 	PRINT_AND_THROW(causeString                                                                             \
@@ -66,11 +53,8 @@ using namespace TL;
 #else
 #endif
 
-#include <atomic>
-#include <optional>
 #include <thread>
 #include <chrono>
-#include <utility>
 #include <mutex>
 #include <tuple>
 
@@ -79,28 +63,151 @@ using namespace TL;
 #else
 #endif
 
+template <class StringBuilder>
+void _append(char const *fmt, StringBuilder &builder) {
+	builder.append(Span{fmt, strlen(fmt)});
+}
+
+template <class Arg, class ...Args, class StringBuilder>
+void _append(char const *fmt, StringBuilder &builder, Arg const &arg, Args const &...args) {
+	char const *c = fmt;
+	char const *argP = 0;
+	while (c[0] && c[1]) {
+		if (c[0] == '{' && c[1] == '}') {
+			argP = c;
+			break;
+		}
+		++c;
+	}
+	ASSERT(argP, "invalid format");
+	builder.append(Span{fmt, argP});
+	toString(arg, [&] (char const *src, umm length) {
+		builder.append(Span{src, length});
+		return 0;
+	});
+
+	_append(argP + 2, builder, args...);
+}
+
+template <class Allocator = TempAllocator, class ...Args>
+String<Allocator> format(char const *fmt, Args const &...args) {
+	StringBuilder<Allocator> builder;
+	_append(fmt, builder, args...);
+	return builder.get();
+}
+
+template <class Allocator = TempAllocator, class ...Args>
+String<Allocator> formatAndTerminate(char const *fmt, Args const &...args) {
+	StringBuilder<Allocator> builder;
+	_append(fmt, builder, args...);
+	builder.append('\0');
+	return builder.get();
+}
+
+ENG_API Span<char const> _getModuleName(void *);
+
+namespace Log {
+enum class Color {
+	black,
+	darkBlue,
+	darkGreen,
+	darkCyan,
+	darkRed,
+	darkMagenta,
+	darkYellow,
+	darkGray,
+	gray,
+	blue,
+	green,
+	cyan,
+	red,
+	magenta,
+	yellow,
+	white,
+};
+
+extern "C" struct IMAGE_DOS_HEADER __ImageBase;
+
+static Span<char const> _moduleName = _getModuleName(&__ImageBase);
+
+ENG_API void _print(Span<char const> msg, Span<char const> = _moduleName);
+ENG_API void setColor(Color);
+inline void fatal(Span<char const> msg) {
+	setColor(Color::red);
+	_print(msg);
+}
+template <class ...Args>
+void error(char const *fmt, Args const &...args) {
+	StringBuilder<TempAllocator> builder;
+	builder.append("ERROR: ");
+	_append(fmt, builder, args...);
+	setColor(Color::red);
+	_print(builder.get());
+}
+template <class ...Args>
+void warn(char const *fmt, Args const &...args) {
+	StringBuilder<TempAllocator> builder;
+	builder.append("WARNING: ");
+	_append(fmt, builder, args...);
+	setColor(Color::yellow);
+	_print(builder.get());
+}
+template <class ...Args>
+void print(char const *fmt, Args const &...args) {
+	StringBuilder<TempAllocator> builder;
+	_append(fmt, builder, args...);
+	setColor(Color::white);
+	_print(builder.get());
+}
+} // namespace Log
+
+ENG_API void dummy(void const *);
+
+// NOTE: memory gets freed before each frame
+ENG_API void *allocateTemp(u32 size, u32 align = 0);
+template <class T>
+T *allocateTemp(u32 count = 1) {
+	return (T *)allocateTemp(count * sizeof T, alignof T);
+}
+
+ENG_API u32 getTempMemoryUsage();
+
+ENG_API u64 getMemoryUsage();
+
+struct TempAllocator {
+	static void *allocate(umm size, umm align = 0) { return allocateTemp((u32)size, (u32)align); }
+	static void deallocate(void *data) {}
+};
+
 namespace Detail {
-template <class Tuple, size_t... indices>
+template <class Tuple, umm... indices>
 static void invoke(void *rawVals) noexcept {
 	Tuple *fnVals((Tuple *)(rawVals));
 	Tuple &tup = *fnVals;
 	std::invoke(std::move(std::get<indices>(tup))...);
-	delete fnVals;
 }
 
-template <class Tuple, size_t... indices>
+template <class Tuple, umm... indices>
 static constexpr auto getInvoke(std::index_sequence<indices...>) noexcept {
 	return &invoke<Tuple, indices...>;
 }
 } // namespace Detail
 
+#define ENG_WORK_USE_TEMP 1
+
 struct ENG_API WorkQueue {
 	u32 volatile workToDo = 0;
 
+	// NOTE: time interval between first call to 'push' and call to 'completeAllWork' MUST NOT cross start-frame or frame-frame boundary
 	template <class Fn, class... Args>
 	void push(Fn &&fn, Args &&... args) {
 		using Tuple = std::tuple<std::decay_t<Fn>, std::decay_t<Args>...>;
-		auto fnParams = new Tuple(std::forward<Fn>(fn), std::forward<Args>(args)...);
+#if ENG_WORK_USE_TEMP
+		auto fnParams = allocateTemp(sizeof Tuple);
+#else
+		auto fnParams = malloc(sizeof Tuple);
+#endif
+		new(fnParams) Tuple(std::forward<Fn>(fn), std::forward<Args>(args)...);
 		constexpr auto invokerProc = Detail::getInvoke<Tuple>(std::make_index_sequence<1 + sizeof...(Args)>{});
 
 		push_(invokerProc, fnParams);
@@ -113,6 +220,36 @@ struct ENG_API WorkQueue {
 ENG_API void initWorkerThreads(u32 count);
 ENG_API void shutdownWorkerThreads();
 ENG_API u32 getWorkerThreadCount();
+
+template <class Pred>
+inline void waitUntil(Pred pred) {
+	u32 miss = 0;
+	while (!pred()) {
+		++miss;
+		if (miss >= 1024) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		} else if (miss >= 256) {
+			switchThread();
+		} else if (miss >= 16) {
+			_mm_pause();
+		}
+	}
+}
+
+inline void waitUntil(bool const volatile &condition) {
+	waitUntil([&]{ return condition; });
+}
+
+struct SyncPoint {
+	u32 const threadCount;
+	u32 volatile counter;
+	inline SyncPoint(u32 threadCount) : threadCount(threadCount), counter(0) {}
+};
+
+inline void sync(SyncPoint& sp) {
+	lockIncrement(&sp.counter);
+	waitUntil([&]{return sp.counter==sp.threadCount;});
+}
 
 enum class ProcessorFeature {
 	_3DNOW,
@@ -218,52 +355,24 @@ extern ENG_API CpuInfo const cpuInfo;
 
 #if OS_WINDOWS
 struct ENG_API PerfTimer {
-	PerfTimer() : begin(getCounter()) {}
+	inline PerfTimer() { reset(); }
 	inline s64 getElapsedCounter() { return getCounter() - begin; }
 	inline void reset() { begin = getCounter(); }
 
 	static s64 const frequency;
 	static s64 getCounter();
-	template <class Ret = f32>
-	inline static Ret getSeconds(s64 begin, s64 end) {
-		return (Ret)(end - begin) / (Ret)frequency;
-	}
-	template <class Ret = f32>
-	inline static Ret getMilliseconds(s64 elapsed) {
-		return (Ret)(elapsed * 1000) / (Ret)frequency;
-	}
-	template <class Ret = f32>
-	inline static Ret getMicroseconds(s64 elapsed) {
-		return (Ret)(elapsed * 1000000) / (Ret)frequency;
-	}
-	template <class Ret = f32>
-	inline static Ret getNanoseconds(s64 elapsed) {
-		return (Ret)(elapsed * 1000000000) / (Ret)frequency;
-	}
-	template <class Ret = f32>
-	inline static Ret getMilliseconds(s64 begin, s64 end) {
-		return getMilliseconds<Ret>(end - begin);
-	}
-	template <class Ret = f32>
-	inline static Ret getMicroseconds(s64 begin, s64 end) {
-		return getMicroseconds<Ret>(end - begin);
-	}
-	template <class Ret = f32>
-	inline static Ret getNanoseconds(s64 begin, s64 end) {
-		return getNanoseconds<Ret>(end - begin);
-	}
-	template <class Ret = f32>
-	inline Ret getMilliseconds() {
-		return getMilliseconds<Ret>(getElapsedCounter());
-	}
-	template <class Ret = f32>
-	inline Ret getMicroseconds() {
-		return getMicroseconds<Ret>(getElapsedCounter());
-	}
-	template <class Ret = f32>
-	inline Ret getNanoseconds() {
-		return getNanoseconds<Ret>(getElapsedCounter());
-	}
+	template <class Ret = f32> inline static Ret getSeconds(s64 elapsed) { return (Ret)elapsed / (Ret)frequency; }
+	template <class Ret = f32> inline static Ret getMilliseconds(s64 elapsed) { return getSeconds<Ret>(elapsed * 1000); }
+	template <class Ret = f32> inline static Ret getMicroseconds(s64 elapsed) { return getSeconds<Ret>(elapsed * 1000000); }
+	template <class Ret = f32> inline static Ret getNanoseconds (s64 elapsed) { return getSeconds<Ret>(elapsed * 1000000000); }
+	template <class Ret = f32> inline static Ret getSeconds(s64 begin, s64 end) { return getSeconds<Ret>(end - begin); }
+	template <class Ret = f32> inline static Ret getMilliseconds(s64 begin, s64 end) { return getMilliseconds<Ret>(end - begin); }
+	template <class Ret = f32> inline static Ret getMicroseconds(s64 begin, s64 end) { return getMicroseconds<Ret>(end - begin); }
+	template <class Ret = f32> inline static Ret getNanoseconds (s64 begin, s64 end) { return getNanoseconds <Ret>(end - begin); }
+	template <class Ret = f32> inline Ret getSeconds() { return getSeconds<Ret>(getElapsedCounter()); }
+	template <class Ret = f32> inline Ret getMilliseconds() { return getMilliseconds<Ret>(getElapsedCounter()); }
+	template <class Ret = f32> inline Ret getMicroseconds() { return getMicroseconds<Ret>(getElapsedCounter()); }
+	template <class Ret = f32> inline Ret getNanoseconds() { return getNanoseconds<Ret>(getElapsedCounter()); }
 
 	static s64 syncWithTime(s64 beginPC, f32 duration);
 
@@ -280,20 +389,45 @@ enum class SeekFrom : u32 {
 	end = 2,
 };
 
-struct ENG_API FileHandle {
+struct File {
+#if OS_WINDOWS
+	enum OpenMode : u32 {
+		OpenMode_write = 0x40000000,
+		OpenMode_read  = 0x80000000,
+		OpenMode_keep  = 0x1,
+	};
+#endif
+
 	void *handle;
 
-	s64 getPointer();
-	s64 setPointer(s64 offset, SeekFrom startPoint = SeekFrom::begin);
-	bool read(void *buffer, size_t size);
-	bool write(void const *buffer, size_t size);
+	ENG_API File(char const *path, u32 mode);
+	ENG_API void close();
+
+	ENG_API bool valid();
+
+	ENG_API s64 getPointer();
+	ENG_API s64 setPointer(s64 offset, SeekFrom startPoint = SeekFrom::begin);
+	ENG_API bool read(void *buffer, umm size);
+	ENG_API bool write(void const *buffer, umm size);
+	ENG_API bool writeLine();
+	inline bool write(Span<char const> span) { return write(span.data(), span.size()); }
+	inline bool write(char const *str) { return write(str, strlen(str)); }
+	template <class T>
+	inline bool writeLine(T const &val) {
+		return write(val) && writeLine();
+	}
 };
 
-ENG_API StringSpan readEntireFile(wchar const *path);
-ENG_API StringSpan readEntireFile(char const *path);
-ENG_API void freeEntireFile(StringSpan file);
+struct EntireFile {
+	StringSpan data;
+	bool valid;
+};
+
+ENG_API EntireFile readEntireFile(char const *path);
+ENG_API void freeEntireFile(EntireFile file);
 
 ENG_API bool fileExists(char const *path);
+inline bool fileExists(Span<char const> path) { return fileExists(nullTerminate<TempAllocator>(path).data()); }
 
 namespace Profiler {
 
@@ -334,38 +468,13 @@ struct Stats {
 
 ENG_API void setCursorVisibility(bool);
 
-namespace Log {
-ENG_API void print(char const *msg);
-template <class... T>
-void print(char const *format, T const &... args) {
-	char buffer[1024];
-	sprintf(buffer, format, args...);
-	print(buffer);
-}
-template <class... T>
-void warn(char const *format, T const &... args) {
-	char buffer[1024];
-	char *t = buffer;
-	t += sprintf(t, "WARNING: ");
-	t += sprintf(t, format, args...);
-	print(buffer);
-}
-template <class... T>
-void error(char const *format, T const &... args) {
-	char buffer[1024];
-	char *t = buffer;
-	t += sprintf(t, "ERROR: ");
-	t += sprintf(t, format, args...);
-	print(buffer);
-}
-} // namespace Log
-
 #define DATA  "../data/"
 #define LDATA CONCAT(L, DATA)
 
 #if OS_WINDOWS
 
 enum {
+	Key_tab = 0x09,
 	Key_enter = 0x0D,
 	Key_escape = 0x1B,
 	Key_leftArrow = 0x25,
@@ -399,3 +508,51 @@ enum {
 };
 #endif
 using Key = u32;
+
+struct ConvertedBytes {
+	u16 value;
+	u16 unit;
+};
+ENG_API Span<char const> byteUnitToString(u16 unit);
+ENG_API ConvertedBytes cvtBytes(u64 bytes);
+
+template <class CopyFn>
+void toString(ConvertedBytes t, CopyFn &&copyFn) {
+	char buf[64];
+	char *end = buf;
+	end += toString(t.value, buf).size();
+	*end++ = ' ';
+	auto unit = byteUnitToString(t.unit);
+	memcpy(end, unit.data(), unit.size());
+	end += unit.size();
+	copyFn(buf, (umm)(end - buf));
+}
+
+struct ConvertedTime {
+	u16 value;
+	u16 unit;
+};
+
+ENG_API Span<char const> timeUnitToString(u16 unit);
+ENG_API ConvertedTime cvtNanoseconds(u64 nanoseconds);
+ENG_API ConvertedTime cvtMicroseconds(u64 microseconds);
+ENG_API ConvertedTime cvtMilliseconds(u64 milliseconds);
+ENG_API ConvertedTime cvtSeconds(u64 seconds);
+ENG_API ConvertedTime cvtMinutes(u64 minutes);
+ENG_API ConvertedTime cvtHours(u64 hours);
+
+template <class CopyFn>
+void toString(ConvertedTime t, CopyFn &&copyFn) {
+	char buf[64];
+	char *end = buf;
+	end += toString(t.value, buf).size();
+	*end++ = ' ';
+	auto unit = timeUnitToString(t.unit);
+	memcpy(end, unit.data(), unit.size());
+	end += unit.size();
+	copyFn(buf, (umm)(end - buf));
+}
+
+
+ENG_API void *getOptimizedProcAddress(char const *name);
+ENG_API Span<char const> getOptimizedModuleName();

@@ -17,7 +17,7 @@ struct Win32Input final : Input {
 	u32 joystickId;
 };
 
-void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool resizeable) {
+void initWindow(Win32Window &window, HINSTANCE instance, char const *title, v2u clientSize, bool resizeable) {
 	PROFILE_FUNCTION;
 
 	window = {};
@@ -68,7 +68,10 @@ void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool re
 		return DefWindowProcA(hwnd, msg, wp, lp);
 	};
 	wndClass.lpszClassName = "myClass";
-	RegisterClassExA(&wndClass);
+	if(!RegisterClassExA(&wndClass)) {
+		Log::error("GetLastError: %lu", GetLastError());
+		INVALID_CODE_PATH("RegisterClass");
+	}
 
 	u32 windowStyle = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 	if (!resizeable) {
@@ -76,16 +79,20 @@ void initWindow(Win32Window &window, HINSTANCE instance, v2u clientSize, bool re
 	}
 
 	RECT windowRect{0, 0, (LONG)window.clientSize.x, (LONG)window.clientSize.y};
-	AdjustWindowRect(&windowRect, windowStyle, 0);
+	if (!AdjustWindowRect(&windowRect, windowStyle, 0)) {
+		Log::error("GetLastError: %lu", GetLastError());
+		INVALID_CODE_PATH("AdjustWindowRect");
+	}
 
-	window.handle = CreateWindowExA(0, wndClass.lpszClassName, "window name", windowStyle, CW_USEDEFAULT, CW_USEDEFAULT,
+	window.handle = CreateWindowExA(0, wndClass.lpszClassName, title, windowStyle, CW_USEDEFAULT, CW_USEDEFAULT,
 									windowRect.right - windowRect.left, windowRect.bottom - windowRect.top, 0, 0,
 									instance, &window);
-	ASSERT(window.handle);
-
-	timeBeginPeriod(1);
+	if (!window.handle) {
+		Log::error("GetLastError: %lu", GetLastError());
+		INVALID_CODE_PATH("CreateWindow");
+	}
 }
-void destroyWindow(Win32Window &window) { timeEndPeriod(1); }
+void destroyWindow(Win32Window &window) {}
 struct DeferredKeyboardInput {
 	u8 key;
 	bool value;
@@ -276,104 +283,118 @@ Win32Input createInput() {
 	return input;
 }
 
-struct Win32Game final : GameApi::State {
-	HMODULE library;
-	std::mutex mutex;
-	FILETIME lastWriteTime;
-	decltype(GameApi::fillStartInfo) *fillStartInfo;
-	decltype(GameApi::init) *_init;
-	decltype(GameApi::start) *_start;
-	decltype(GameApi::debugStart) *_debugStart;
-	decltype(GameApi::debugReload) *_debugReload;
-	decltype(GameApi::update) *_update;
-	decltype(GameApi::debugUpdate) *_debugUpdate;
-	decltype(GameApi::fillSoundBuffer) *_fillSoundBuffer;
-	decltype(GameApi::shutdown) *_shutdown;
-
-	void init() { _init(*this); }
-	void start(Window &window, Renderer &renderer, Input &input, Time &time) { _start(*this, window, renderer, input, time); }
-	void update(Window &window, Renderer &renderer, Input &input, Time &time) { _update(*this, window, renderer, input, time); }
-	void shutdown() { _shutdown(*this); }
-	void debugReload() { _debugReload(*this); }
-	void fillSoundBuffer(Audio &audio, s16 *subSample, u32 subSampleCount) { _fillSoundBuffer(*this, audio, subSample, subSampleCount); }
-	void debugStart(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats &&stats) { _debugStart(*this, window, renderer, input, time, std::move(stats)); }
-	void debugUpdate(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats &&stats) { _debugUpdate(*this, window, renderer, input, time, std::move(stats)); }
-
-};
-
 FILETIME getLastWriteTime(char const *filename) {
 	WIN32_FIND_DATAA data;
 	FindFirstFileA(filename, &data);
 	return data.ftLastWriteTime;
 }
 
-void loadGame(Win32Game &game) {
-	PROFILE_FUNCTION;
+struct Win32Game {
+	HMODULE library;
+	std::mutex mutex;
+	FILETIME lastWriteTime;
+	struct State final : EngState {
+		decltype(GameApi::fillStartInfo) *fillStartInfo;
+		decltype(GameApi::init) *_init;
+		decltype(GameApi::start) *_start;
+		decltype(GameApi::debugStart) *_debugStart;
+		decltype(GameApi::debugReload) *_debugReload;
+		decltype(GameApi::update) *_update;
+		decltype(GameApi::debugUpdate) *_debugUpdate;
+		decltype(GameApi::fillSoundBuffer) *_fillSoundBuffer;
+		decltype(GameApi::shutdown) *_shutdown;
 
-	u32 tryCount = 0;
-	while (!CopyFileA("game.dll", "_game.dll", false)) {
-		if (++tryCount == 100) {
-			INVALID_CODE_PATH("Failed to copy game.dll");
+		void init() { _init(*this); }
+		void start(Window &window, Renderer &renderer, Input &input, Time &time) { _start(*this, window, renderer, input, time); }
+		void update(Window &window, Renderer &renderer, Input &input, Time &time) { _update(*this, window, renderer, input, time); }
+		void shutdown() { _shutdown(*this); }
+		void debugReload() { _debugReload(*this); }
+		void fillSoundBuffer(Audio &audio, s16 *subSample, u32 subSampleCount) { _fillSoundBuffer(*this, audio, subSample, subSampleCount); }
+		void debugStart(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats const &stats) { _debugStart(*this, window, renderer, input, time, stats); }
+		void debugUpdate(Window &window, Renderer &renderer, Input &input, Time &time, Profiler::Stats const &start, Profiler::Stats const &stats) { _debugUpdate(*this, window, renderer, input, time, start, stats); }
+	} state;
+	
+	String<> gameLibName;
+
+	void init() {
+		auto lib = LoadLibraryA("game.dll");
+		ASSERT(lib);
+		DEFER { FreeLibrary(lib); };
+
+		StringBuilder<OsAllocator> builder;
+		builder.append(((decltype(GameApi::getName) *)GetProcAddress(lib, "getName"))());
+		builder.append(".dll");
+		gameLibName = builder.getTerminated();
+	}
+
+	void load() {
+		PROFILE_FUNCTION;
+
+		u32 tryCount = 0;
+		while (!CopyFileA("game.dll", gameLibName.data(), false)) {
+			if (++tryCount == 100) {
+				INVALID_CODE_PATH("Failed to copy game.dll");
+			}
+			Sleep(100);
 		}
-		Sleep(100);
-	}
 
-	game.lastWriteTime = getLastWriteTime("game.dll");
+		lastWriteTime = getLastWriteTime("game.dll");
 
-	auto tryLoad = [&]() {
-		game.library = LoadLibraryA("_game.dll");
-		return game.library != 0;
-	};
+		auto tryLoad = [&]() {
+			library = LoadLibraryA(gameLibName.data());
+			return library != 0;
+		};
 
-	tryCount = 0;
-	while (!tryLoad()) {
-		if (++tryCount == 100) {
-			INVALID_CODE_PATH("Failed to load _game.dll");
+		tryCount = 0;
+		while (!tryLoad()) {
+			if (++tryCount == 100) {
+				INVALID_CODE_PATH("Failed to load {}", gameLibName);
+			}
+			Sleep(100);
 		}
-		Sleep(100);
-	}
 
-	bool success = true;
-	char errorMessage[1024];
-	auto getProcAddress = [&](auto &dst, char const *name) {
-		auto result = GetProcAddress(game.library, name);
-		if (result) {
-			dst = (decltype(dst))result;
-		} else {
-			success = false;
-			sprintf(errorMessage, "Function %s not found in game.dll\n", name);
+		bool success = true;
+		auto getProcAddress = [&](auto &dst, char const *name) {
+			auto result = GetProcAddress(library, name);
+			if (result) {
+				dst = (decltype(dst))result;
+			} else {
+				success = false;
+				Log::error("Function {} not found in {}", name, gameLibName);
+			}
+		};
+
+		getProcAddress(state.fillStartInfo, "fillStartInfo");
+		getProcAddress(state._init, "init");
+		getProcAddress(state._start, "start");
+		getProcAddress(state._debugStart, "debugStart");
+		getProcAddress(state._debugReload, "debugReload");
+		getProcAddress(state._update, "update");
+		getProcAddress(state._debugUpdate, "debugUpdate");
+		getProcAddress(state._fillSoundBuffer, "fillSoundBuffer");
+		getProcAddress(state._shutdown, "shutdown");
+
+		if (!success) {
+			INVALID_CODE_PATH("game api is missing");
 		}
-	};
-
-	getProcAddress(game.fillStartInfo, "fillStartInfo");
-	getProcAddress(game._init, "init");
-	getProcAddress(game._start, "start");
-	getProcAddress(game._debugStart, "debugStart");
-	getProcAddress(game._debugReload, "debugReload");
-	getProcAddress(game._update, "update");
-	getProcAddress(game._debugUpdate, "debugUpdate");
-	getProcAddress(game._fillSoundBuffer, "fillSoundBuffer");
-	getProcAddress(game._shutdown, "shutdown");
-
-	if (!success) {
-		printf("%s", errorMessage);
-		INVALID_CODE_PATH("game api is missing");
 	}
-}
-void unloadGame(Win32Game &game) {
-	FreeLibrary(game.library);
-	DeleteFileA("_game.dll");
-}
-void checkUpdate(Win32Game &game) {
-	auto newTime = getLastWriteTime("game.dll");
-	if (CompareFileTime(&newTime, &game.lastWriteTime) == 1) {
-		game.mutex.lock();
-		unloadGame(game);
-		loadGame(game);
-		game.mutex.unlock();
-		game.debugReload();
+	void unload() {
+		FreeLibrary(library);
 	}
-}
+	void reload() {
+		mutex.lock();
+		unload();
+		load();
+		mutex.unlock();
+		state.debugReload();
+	}
+	void checkUpdate() {
+		auto newTime = getLastWriteTime("game.dll");
+		if (CompareFileTime(&newTime, &lastWriteTime) == 1) {
+			reload();
+		}
+	}
+};
 
 #include <dsound.h>
 #pragma comment(lib,  "dsound")
@@ -399,8 +420,8 @@ struct Win32Audio final : Audio {
 		DWORD Region1SampleCount = Region1Size / bytesPerSample;
 		DWORD Region2SampleCount = Region2Size / bytesPerSample;
 
-		if (Region1SampleCount) game.fillSoundBuffer(*this, (s16*)Region1, Region1SampleCount);
-		if (Region2SampleCount) game.fillSoundBuffer(*this, (s16*)Region2, Region2SampleCount);
+		if (Region1SampleCount) game.state.fillSoundBuffer(*this, (s16*)Region1, Region1SampleCount);
+		if (Region2SampleCount) game.state.fillSoundBuffer(*this, (s16*)Region2, Region2SampleCount);
 
 		runningSampleIndex += Region1SampleCount + Region2SampleCount;
 
@@ -484,7 +505,7 @@ char const* getRendererDllName(RenderingApi api) {
 		default: INVALID_CODE_PATH();
 	}
 }
-Renderer createRenderer(RenderingApi renderingApi, Window &window, u32 sampleCount) {
+Renderer createRenderer(RenderingApi renderingApi, Window &window, u32 sampleCount, Format format) {
 	PROFILE_FUNCTION;
 	char rendererLibName[256];
 	sprintf(rendererLibName, "r_%s.dll", getRendererDllName(renderingApi));
@@ -495,60 +516,93 @@ Renderer createRenderer(RenderingApi renderingApi, Window &window, u32 sampleCou
 	}
 
 	Renderer renderer;
-	renderer.window = &window;
-	renderer.drawCalls = 0;
 	
 	bool foundAllProcs = true;
 
-#define R_DECORATE(type, name, args, params)										\
-	{																				\
-		char const *fn = STRINGIZE(RNAME(name));									\
-		*(void **)&renderer.RNAME(name) = (void *)GetProcAddress(renderModule, fn);	\
-		if (!renderer.RNAME(name)) {												\
-			foundAllProcs = false;													\
-			Log::print("Funcion '%s' not found in %s", fn, rendererLibName);		\
-		}																			\
+	struct RendererFn {
+		char const *name;
+		void **address;
+	};
+	StaticList<RendererFn, 64> rendererFunctions;
+
+#define R_DECORATE(type, name, args, params) rendererFunctions.push_back({STRINGIZE(RNAME(name)), (void **)&renderer.RNAME(name)})
+	R_ALLFUNS;
+
+	for (auto fn : rendererFunctions) {												
+		*fn.address = (void *)GetProcAddress(renderModule, fn.name);	
+		if (!*fn.address) {												
+			foundAllProcs = false;													
+			Log::error("Funcion '%s' not found in %s", fn.name, rendererLibName);		
+		}																			
 	}
 
-	R_ALLFUNS;
 	if (!foundAllProcs)
 		INVALID_CODE_PATH("Not all procs found in %s", rendererLibName);
 		
-	renderer.init(sampleCount);
+	renderer.init(window, sampleCount, format);
 
 	return renderer;
 }
 
+void printMemoryUsage() {
+	Log::print("Memory usage: {}", cvtBytes(getMemoryUsage()));
+}
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
+	printMemoryUsage();
+
+	AllocConsole();
+	freopen("CONOUT$", "w", stdout);
+	Log::setHandle(GetStdHandle(STD_OUTPUT_HANDLE));
+
+	timeBeginPeriod(1);
+	DEFER { timeEndPeriod(1); };
+
+	printMemoryUsage();
+
+#if 0
+	for (u32 i = 0; i < 1024*1024*16; ++i) {
+		*((char *)allocateTemp(1)) = (char)i;
+	}
+	resetTempStorage();
+#endif
+	
 	try {
-		PROFILE_BEGIN("AllocConsole");
-		AllocConsole();
-		freopen("CONOUT$", "w", stdout);
-		PROFILE_END;
-		
-		Win32Game game;
-		loadGame(game);
-		DEFER { unloadGame(game); };
+		loadOptimizedModule();
+
+		Win32Game game{};
+		game.init();
+
+		game.load();
+		DEFER { game.unload(); };
+	
+		printMemoryUsage();
 
 		StartInfo startInfo{};
 		startInfo.clientSize = {1600, 900};
 		startInfo.resizeable = true;
 		startInfo.renderingApi = RenderingApi::d3d11;
-		startInfo.sampleCount = 1;
+		startInfo.backBufferFormat = Format::UN_RGBA8;
+		startInfo.backBufferSampleCount = 1;
 		startInfo.workerThreadCount = cpuInfo.logicalProcessorCount - 1;
 
-		game.fillStartInfo(startInfo);
+		game.state.fillStartInfo(startInfo);
+
+		printMemoryUsage();
 
 		initWorkerThreads(startInfo.workerThreadCount);
 		DEFER { shutdownWorkerThreads(); };
 		
+		printMemoryUsage();
+		
 		Profiler::init(startInfo.workerThreadCount + 1);
 		PROFILE_BEGIN("mainStartup");
-
+		
+		printMemoryUsage();
+		
 		WorkQueue workQueue{};
 
 		workQueue.push([&]{
-			game.init();			   
+			game.state.init();			   
 		});
 
 		Win32Input input;
@@ -557,11 +611,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		});
 
 		Win32Window window;
-		initWindow(window, instance, startInfo.clientSize, startInfo.resizeable);
+		initWindow(window, instance, startInfo.windowTitle, startInfo.clientSize, startInfo.resizeable);
+		
+		printMemoryUsage();
 
 		Renderer renderer;
 		workQueue.push([&] {
-			renderer = createRenderer(startInfo.renderingApi, window, startInfo.sampleCount);
+			renderer = createRenderer(startInfo.renderingApi, window, startInfo.backBufferSampleCount, startInfo.backBufferFormat);
 		});
 
 		SyncPoint playAudioSyncPoint{2};
@@ -589,6 +645,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		DEFER { audioThread.join(); };
 		
 		workQueue.completeAllWork();
+		printMemoryUsage();
 
 		SetForegroundWindow((HWND)window.handle);
 
@@ -603,10 +660,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		time.targetDelta = 0.016666666f;
 		time.time = 0.f;
 
-		game.start(window, renderer, input, time);
-		DEFER { game.shutdown(); };
+		game.state.start(window, renderer, input, time);
+		DEFER { game.state.shutdown(); };
 		
-		game.debugStart(window, renderer, input, time, Profiler::getStats());
+		Profiler::Stats startStats = Profiler::getStats();
+		game.state.debugStart(window, renderer, input, time, startStats);
 		
 		time.delta = time.targetDelta;
 
@@ -617,26 +675,31 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 		s64 lastPerfCounter = PerfTimer::getCounter();
 		while (window.open) {
 			Profiler::reset();
+			resetTempStorage();
 
-			checkUpdate(game);
+			game.checkUpdate();
+			if (game.state.forceReload) {
+				game.state.forceReload = false;
+				game.reload();
+			}
 
 			processMessages(window, input);
 			if (window.resized) {
 				reset(input);
-				renderer.resize(window.clientSize);
+				renderer.resize(window);
 			}
 
-			game.update(window, renderer, input, time);
+			game.state.update(window, renderer, input, time);
 			
 			finalizeFrame(window, lastPerfCounter, time);
 
-			game.debugUpdate(window, renderer, input, time, Profiler::getStats());
-			
-			renderer.present();
+			game.state.debugUpdate(window, renderer, input, time, startStats, Profiler::getStats());
+		
+			renderer.present(window, time);
 		}
 		return 0;
 	} catch (std::runtime_error &e) {
 		MessageBoxA(0, e.what(), "std::runtime_error", MB_OK);
+		return -1;
 	}
-	return -1;
 }
